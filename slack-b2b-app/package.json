@@ -9,7 +9,9 @@
     "predev": "convex dev --until-success && convex dashboard",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.61.3",
@@ -17,19 +19,23 @@
     "convex": "^1.35.1",
     "next": "^16.2.3",
     "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.5",
+    "svix": "^1.91.1"
   },
   "devDependencies": {
     "@convex-dev/eslint-plugin": "^1.2.2",
+    "@edge-runtime/vm": "^5.0.0",
     "@tailwindcss/postcss": "^4.2.2",
     "@types/node": "^24.12.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "convex-test": "^0.0.49",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.3",
     "npm-run-all2": "^8.0.4",
     "prettier": "^3.8.2",
     "tailwindcss": "^4.2.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.5"
   }
 }
