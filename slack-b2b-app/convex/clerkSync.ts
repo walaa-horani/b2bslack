@@ -2,15 +2,20 @@ import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 
+// Clerk webhook payloads contain ~40 fields each; we only read a few. We use
+// v.any() for the `data` arg (these mutations are only called from http.ts
+// *after* Svix signature verification, so trusted input) and apply narrow
+// local TS types inside each handler.
+
 // ---------- user ----------
 
-const userData = v.object({
-  id: v.string(),
-  email_addresses: v.array(v.object({ email_address: v.string() })),
-  first_name: v.optional(v.union(v.string(), v.null())),
-  last_name: v.optional(v.union(v.string(), v.null())),
-  image_url: v.optional(v.union(v.string(), v.null())),
-});
+type ClerkUserData = {
+  id: string;
+  email_addresses: Array<{ email_address: string }>;
+  first_name?: string | null;
+  last_name?: string | null;
+  image_url?: string | null;
+};
 
 function fullName(first?: string | null, last?: string | null): string | undefined {
   const joined = [first, last].filter(Boolean).join(" ").trim();
@@ -18,16 +23,17 @@ function fullName(first?: string | null, last?: string | null): string | undefin
 }
 
 export const upsertUser = internalMutation({
-  args: { data: userData, issuerDomain: v.string() },
+  args: { data: v.any(), issuerDomain: v.string() },
   handler: async (ctx, { data, issuerDomain }) => {
-    const tokenIdentifier = `${issuerDomain}|${data.id}`;
-    const email = data.email_addresses[0]?.email_address ?? "";
-    const name = fullName(data.first_name, data.last_name);
-    const imageUrl = data.image_url ?? undefined;
+    const u = data as ClerkUserData;
+    const tokenIdentifier = `${issuerDomain}|${u.id}`;
+    const email = u.email_addresses[0]?.email_address ?? "";
+    const name = fullName(u.first_name, u.last_name);
+    const imageUrl = u.image_url ?? undefined;
 
     const existing = await ctx.db
       .query("users")
-      .withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", data.id))
+      .withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", u.id))
       .unique();
 
     if (existing) {
@@ -35,7 +41,7 @@ export const upsertUser = internalMutation({
       return existing._id;
     }
     return await ctx.db.insert("users", {
-      clerkUserId: data.id,
+      clerkUserId: u.id,
       tokenIdentifier,
       email,
       name,
@@ -65,35 +71,36 @@ export const deleteUser = internalMutation({
 
 // ---------- organization ----------
 
-const organizationData = v.object({
-  id: v.string(),
-  slug: v.string(),
-  name: v.string(),
-  image_url: v.optional(v.union(v.string(), v.null())),
-});
+type ClerkOrgData = {
+  id: string;
+  slug: string;
+  name: string;
+  image_url?: string | null;
+};
 
 export const upsertOrganization = internalMutation({
-  args: { data: organizationData },
+  args: { data: v.any() },
   handler: async (ctx, { data }) => {
-    const imageUrl = data.image_url ?? undefined;
+    const o = data as ClerkOrgData;
+    const imageUrl = o.image_url ?? undefined;
 
     const existing = await ctx.db
       .query("organizations")
-      .withIndex("by_clerk_org_id", (q) => q.eq("clerkOrgId", data.id))
+      .withIndex("by_clerk_org_id", (q) => q.eq("clerkOrgId", o.id))
       .unique();
 
     if (existing) {
       await ctx.db.patch(existing._id, {
-        slug: data.slug,
-        name: data.name,
+        slug: o.slug,
+        name: o.name,
         imageUrl,
       });
       return existing._id;
     }
     return await ctx.db.insert("organizations", {
-      clerkOrgId: data.id,
-      slug: data.slug,
-      name: data.name,
+      clerkOrgId: o.id,
+      slug: o.slug,
+      name: o.name,
       imageUrl,
     });
   },
@@ -120,36 +127,35 @@ export const deleteOrganization = internalMutation({
 
 // ---------- membership ----------
 
-const membershipData = v.object({
-  id: v.string(),
-  organization: v.object({ id: v.string() }),
-  public_user_data: v.object({ user_id: v.string() }),
-  role: v.string(),
-});
+type ClerkMembershipData = {
+  id: string;
+  organization: { id: string };
+  public_user_data: { user_id: string };
+  role: string;
+};
 
 const MAX_MEMBERSHIP_RETRIES = 5;
 
 export const upsertMembership = internalMutation({
-  args: { data: membershipData, attempts: v.number() },
+  args: { data: v.any(), attempts: v.number() },
   handler: async (ctx, { data, attempts }) => {
+    const m = data as ClerkMembershipData;
     const user = await ctx.db
       .query("users")
       .withIndex("by_clerk_user_id", (q) =>
-        q.eq("clerkUserId", data.public_user_data.user_id),
+        q.eq("clerkUserId", m.public_user_data.user_id),
       )
       .unique();
     const org = await ctx.db
       .query("organizations")
-      .withIndex("by_clerk_org_id", (q) =>
-        q.eq("clerkOrgId", data.organization.id),
-      )
+      .withIndex("by_clerk_org_id", (q) => q.eq("clerkOrgId", m.organization.id))
       .unique();
 
     // Out-of-order webhook: parent rows not yet present. Re-schedule up to 5 times.
     if (!user || !org) {
       if (attempts >= MAX_MEMBERSHIP_RETRIES) {
         console.error(
-          `upsertMembership giving up on ${data.id} after ${attempts} attempts: user=${!!user} org=${!!org}`,
+          `upsertMembership giving up on ${m.id} after ${attempts} attempts: user=${!!user} org=${!!org}`,
         );
         return;
       }
@@ -164,19 +170,19 @@ export const upsertMembership = internalMutation({
     const existing = await ctx.db
       .query("memberships")
       .withIndex("by_clerk_membership_id", (q) =>
-        q.eq("clerkMembershipId", data.id),
+        q.eq("clerkMembershipId", m.id),
       )
       .unique();
 
     if (existing) {
-      await ctx.db.patch(existing._id, { role: data.role });
+      await ctx.db.patch(existing._id, { role: m.role });
       return existing._id;
     }
     return await ctx.db.insert("memberships", {
       userId: user._id,
       organizationId: org._id,
-      clerkMembershipId: data.id,
-      role: data.role,
+      clerkMembershipId: m.id,
+      role: m.role,
     });
   },
 });
