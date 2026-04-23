@@ -254,3 +254,107 @@ test("channels.leave throws on protected channel (#general)", async () => {
     asJane.mutation(api.channels.leave, { channelId: generalId }),
   ).rejects.toThrow(/Cannot leave/i);
 });
+
+// ---------- deleteChannel ----------
+
+test("channels.deleteChannel by admin cascades messages + channelMembers", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, orgId } = await seedAcme(t);
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const channelId = await asJane.mutation(api.channels.create, {
+    workspaceSlug: "acme",
+    name: "Project Alpha",
+    slug: "project-alpha",
+  });
+  await t.run(async (ctx) => {
+    await ctx.db.insert("messages", {
+      channelId,
+      userId,
+      text: "hello",
+    });
+  });
+
+  await asJane.mutation(api.channels.deleteChannel, { channelId });
+
+  expect(
+    await t.run(
+      async (ctx) =>
+        await ctx.db
+          .query("channels")
+          .withIndex("by_organization", (q) => q.eq("organizationId", orgId))
+          .collect(),
+    ),
+  ).toHaveLength(0);
+  expect(
+    await t.run(async (ctx) => await ctx.db.query("messages").collect()),
+  ).toHaveLength(0);
+  expect(
+    await t.run(async (ctx) => await ctx.db.query("channelMembers").collect()),
+  ).toHaveLength(0);
+});
+
+test("channels.deleteChannel rejects non-admin", async () => {
+  const t = convexTest(schema, modules);
+  const { userId: janeId, orgId } = await seedAcme(t);
+
+  // Bob is a member (not admin).
+  await t.run(async (ctx) => {
+    const bobId = await ctx.db.insert("users", {
+      clerkUserId: "user_bob",
+      tokenIdentifier: `${ISSUER}|user_bob`,
+      email: "bob@example.com",
+    });
+    await ctx.db.insert("memberships", {
+      userId: bobId,
+      organizationId: orgId,
+      clerkMembershipId: "orgmem_bob",
+      role: "org:member",
+    });
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const channelId = await asJane.mutation(api.channels.create, {
+    workspaceSlug: "acme",
+    name: "Project Alpha",
+    slug: "project-alpha",
+  });
+
+  const asBob = t.withIdentity({
+    tokenIdentifier: `${ISSUER}|user_bob`,
+    subject: "user_bob",
+    email: "bob@example.com",
+  });
+  await expect(
+    asBob.mutation(api.channels.deleteChannel, { channelId }),
+  ).rejects.toThrow(/admin/i);
+});
+
+test("channels.deleteChannel throws on protected channel", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, orgId } = await seedAcme(t);
+  const generalId = await t.run(async (ctx) => {
+    return await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "general",
+      name: "General",
+      createdBy: userId,
+      isProtected: true,
+    });
+  });
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  await expect(
+    asJane.mutation(api.channels.deleteChannel, { channelId: generalId }),
+  ).rejects.toThrow(/protected|cannot delete/i);
+});

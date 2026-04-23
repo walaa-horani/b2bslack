@@ -94,3 +94,38 @@ export const leave = mutation({
     if (membership) await ctx.db.delete(membership._id);
   },
 });
+
+export const deleteChannel = mutation({
+  args: { channelId: v.id("channels") },
+  handler: async (ctx, args) => {
+    const user = await ensureUser(ctx);
+    const channel = await ctx.db.get(args.channelId);
+    if (!channel) throw new Error(`Channel not found: ${args.channelId}`);
+    if (channel.isProtected) {
+      throw new Error(`Cannot delete the protected ${channel.slug} channel.`);
+    }
+
+    const org = await ctx.db.get(channel.organizationId);
+    if (!org) throw new Error("Channel belongs to an unknown workspace.");
+    const { membership } = await assertMember(ctx, user._id, org.slug);
+    if (membership.role !== "org:admin") {
+      throw new Error("Only workspace admins can delete channels.");
+    }
+
+    // Cascade messages (batched).
+    const messages = await ctx.db
+      .query("messages")
+      .withIndex("by_channel", (q) => q.eq("channelId", channel._id))
+      .take(256);
+    for (const msg of messages) await ctx.db.delete(msg._id);
+
+    // Cascade channelMembers (batched).
+    const cmembers = await ctx.db
+      .query("channelMembers")
+      .withIndex("by_channel", (q) => q.eq("channelId", channel._id))
+      .take(256);
+    for (const cm of cmembers) await ctx.db.delete(cm._id);
+
+    await ctx.db.delete(channel._id);
+  },
+});
