@@ -1,14 +1,26 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { assertChannelMember, assertMember, ensureUser, getAuthedUser } from "./auth";
+import {
+  PaywallError,
+  assertChannelMember,
+  assertFeature,
+  assertMember,
+  ensureUser,
+  getAuthedUser,
+} from "./auth";
+import { FEATURE_PRIVATE_CHANNELS } from "./billing";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,79}$/;
+
+// Re-export so channels.ts callers don't need to import from auth.ts for the type check.
+export { PaywallError };
 
 export const create = mutation({
   args: {
     workspaceSlug: v.string(),
     name: v.string(),
     slug: v.string(),
+    isPrivate: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     if (!SLUG_RE.test(args.slug)) {
@@ -24,6 +36,9 @@ export const create = mutation({
     const user = await ensureUser(ctx);
     const { org } = await assertMember(ctx, user._id, args.workspaceSlug);
 
+    const isPrivate = args.isPrivate === true;
+    if (isPrivate) assertFeature(org, FEATURE_PRIVATE_CHANNELS);
+
     const collision = await ctx.db
       .query("channels")
       .withIndex("by_organization_and_slug", (q) =>
@@ -38,6 +53,7 @@ export const create = mutation({
       name: trimmedName,
       createdBy: user._id,
       isProtected: false,
+      isPrivate,
     });
     await ctx.db.insert("channelMembers", {
       channelId,
@@ -58,6 +74,12 @@ export const join = mutation({
     const org = await ctx.db.get(channel.organizationId);
     if (!org) throw new Error("Channel belongs to an unknown workspace.");
     await assertMember(ctx, user._id, org.slug);
+
+    if (channel.isPrivate) {
+      throw new Error(
+        "Private channel: ask an existing member to add you.",
+      );
+    }
 
     const existing = await ctx.db
       .query("channelMembers")
@@ -127,6 +149,40 @@ export const deleteChannel = mutation({
     for (const cm of cmembers) await ctx.db.delete(cm._id);
 
     await ctx.db.delete(channel._id);
+  },
+});
+
+export const invite = mutation({
+  args: {
+    channelId: v.id("channels"),
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const caller = await ensureUser(ctx);
+    const { channel } = await assertChannelMember(ctx, caller._id, args.channelId);
+
+    const org = await ctx.db.get(channel.organizationId);
+    if (!org) throw new Error("Channel belongs to an unknown workspace.");
+
+    if (channel.isPrivate) {
+      assertFeature(org, FEATURE_PRIVATE_CHANNELS);
+    }
+
+    await assertMember(ctx, args.userId, org.slug);
+
+    const existing = await ctx.db
+      .query("channelMembers")
+      .withIndex("by_user_and_channel", (q) =>
+        q.eq("userId", args.userId).eq("channelId", channel._id),
+      )
+      .unique();
+    if (existing) return existing._id;
+
+    return await ctx.db.insert("channelMembers", {
+      channelId: channel._id,
+      userId: args.userId,
+      organizationId: channel.organizationId,
+    });
   },
 });
 
@@ -212,7 +268,22 @@ export const listBrowsable = query({
     const joinedIds = new Set(myMemberships.map((m) => m.channelId));
 
     return allChannels
-      .filter((c) => !joinedIds.has(c._id))
+      .filter((c) => !c.isPrivate && !joinedIds.has(c._id))
       .sort((a, b) => a.name.localeCompare(b.name));
+  },
+});
+
+export const listChannelMembers = query({
+  args: { channelId: v.id("channels") },
+  handler: async (ctx, args) => {
+    const user = await getAuthedUser(ctx);
+    if (!user) throw new Error("Not authenticated");
+    await assertChannelMember(ctx, user._id, args.channelId);
+
+    const rows = await ctx.db
+      .query("channelMembers")
+      .withIndex("by_channel", (q) => q.eq("channelId", args.channelId))
+      .take(500);
+    return rows.map((r) => r.userId);
   },
 });
