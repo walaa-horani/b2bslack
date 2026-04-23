@@ -17,6 +17,7 @@ type ClerkEvent =
   | { type: "organizationMembership.deleted"; data: { id: string } }
   | {
       type:
+        | "subscriptionItem.created"
         | "subscriptionItem.active"
         | "subscriptionItem.updated"
         | "subscriptionItem.canceled"
@@ -133,6 +134,7 @@ http.route({
           clerkMembershipId: event.data.id,
         });
         break;
+      case "subscriptionItem.created":
       case "subscriptionItem.active":
       case "subscriptionItem.updated":
       case "subscriptionItem.freeTrialEnding": {
