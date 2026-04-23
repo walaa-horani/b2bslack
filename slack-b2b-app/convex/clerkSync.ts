@@ -115,12 +115,35 @@ export const deleteOrganization = internalMutation({
       .unique();
     if (!org) return;
 
+    // 1. Channels + their cascades (messages, channelMembers).
+    const channels = await ctx.db
+      .query("channels")
+      .withIndex("by_organization", (q) => q.eq("organizationId", org._id))
+      .take(256);
+    for (const ch of channels) {
+      const messages = await ctx.db
+        .query("messages")
+        .withIndex("by_channel", (q) => q.eq("channelId", ch._id))
+        .take(256);
+      for (const msg of messages) await ctx.db.delete(msg._id);
+
+      const cmembers = await ctx.db
+        .query("channelMembers")
+        .withIndex("by_channel", (q) => q.eq("channelId", ch._id))
+        .take(256);
+      for (const cm of cmembers) await ctx.db.delete(cm._id);
+
+      await ctx.db.delete(ch._id);
+    }
+
+    // 2. Workspace memberships (Foundation cascade behavior).
     const memberships = await ctx.db
       .query("memberships")
       .withIndex("by_organization", (q) => q.eq("organizationId", org._id))
       .take(256);
-    for (const m of memberships) await ctx.db.delete(m._id);
+    for (const mem of memberships) await ctx.db.delete(mem._id);
 
+    // 3. The org row.
     await ctx.db.delete(org._id);
   },
 });
@@ -151,7 +174,6 @@ export const upsertMembership = internalMutation({
       .withIndex("by_clerk_org_id", (q) => q.eq("clerkOrgId", m.organization.id))
       .unique();
 
-    // Out-of-order webhook: parent rows not yet present. Re-schedule up to 5 times.
     if (!user || !org) {
       if (attempts >= MAX_MEMBERSHIP_RETRIES) {
         console.error(
@@ -167,35 +189,88 @@ export const upsertMembership = internalMutation({
       return;
     }
 
+    // 1. Workspace membership row (existing behavior).
     const existing = await ctx.db
       .query("memberships")
       .withIndex("by_clerk_membership_id", (q) =>
         q.eq("clerkMembershipId", m.id),
       )
       .unique();
-
     if (existing) {
       await ctx.db.patch(existing._id, { role: m.role });
-      return existing._id;
+    } else {
+      await ctx.db.insert("memberships", {
+        userId: user._id,
+        organizationId: org._id,
+        clerkMembershipId: m.id,
+        role: m.role,
+      });
     }
-    return await ctx.db.insert("memberships", {
-      userId: user._id,
-      organizationId: org._id,
-      clerkMembershipId: m.id,
-      role: m.role,
-    });
+
+    // 2. Ensure #general exists (idempotent).
+    let general = await ctx.db
+      .query("channels")
+      .withIndex("by_organization_and_slug", (q) =>
+        q.eq("organizationId", org._id).eq("slug", "general"),
+      )
+      .unique();
+    if (!general) {
+      const generalId = await ctx.db.insert("channels", {
+        organizationId: org._id,
+        slug: "general",
+        name: "General",
+        createdBy: user._id,
+        isProtected: true,
+      });
+      general = await ctx.db.get(generalId);
+    }
+
+    // 3. Add this user to every protected channel in the workspace.
+    const protectedChannels = await ctx.db
+      .query("channels")
+      .withIndex("by_organization", (q) => q.eq("organizationId", org._id))
+      .collect();
+    for (const ch of protectedChannels) {
+      if (!ch.isProtected) continue;
+      const already = await ctx.db
+        .query("channelMembers")
+        .withIndex("by_user_and_channel", (q) =>
+          q.eq("userId", user._id).eq("channelId", ch._id),
+        )
+        .unique();
+      if (!already) {
+        await ctx.db.insert("channelMembers", {
+          userId: user._id,
+          channelId: ch._id,
+          organizationId: org._id,
+        });
+      }
+    }
   },
 });
 
 export const deleteMembership = internalMutation({
   args: { clerkMembershipId: v.string() },
   handler: async (ctx, { clerkMembershipId }) => {
-    const m = await ctx.db
+    const membership = await ctx.db
       .query("memberships")
       .withIndex("by_clerk_membership_id", (q) =>
         q.eq("clerkMembershipId", clerkMembershipId),
       )
       .unique();
-    if (m) await ctx.db.delete(m._id);
+    if (!membership) return;
+
+    // Remove this user from every channel in this workspace.
+    const channelMemberships = await ctx.db
+      .query("channelMembers")
+      .withIndex("by_user_and_organization", (q) =>
+        q
+          .eq("userId", membership.userId)
+          .eq("organizationId", membership.organizationId),
+      )
+      .take(256);
+    for (const cm of channelMemberships) await ctx.db.delete(cm._id);
+
+    await ctx.db.delete(membership._id);
   },
 });
