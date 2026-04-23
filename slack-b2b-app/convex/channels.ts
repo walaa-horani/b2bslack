@@ -47,3 +47,50 @@ export const create = mutation({
     return channelId;
   },
 });
+
+export const join = mutation({
+  args: { channelId: v.id("channels") },
+  handler: async (ctx, args) => {
+    const user = await ensureUser(ctx);
+    const channel = await ctx.db.get(args.channelId);
+    if (!channel) throw new Error(`Channel not found: ${args.channelId}`);
+
+    const org = await ctx.db.get(channel.organizationId);
+    if (!org) throw new Error("Channel belongs to an unknown workspace.");
+    await assertMember(ctx, user._id, org.slug);
+
+    const existing = await ctx.db
+      .query("channelMembers")
+      .withIndex("by_user_and_channel", (q) =>
+        q.eq("userId", user._id).eq("channelId", channel._id),
+      )
+      .unique();
+    if (existing) return existing._id;
+
+    return await ctx.db.insert("channelMembers", {
+      channelId: channel._id,
+      userId: user._id,
+      organizationId: channel.organizationId,
+    });
+  },
+});
+
+export const leave = mutation({
+  args: { channelId: v.id("channels") },
+  handler: async (ctx, args) => {
+    const user = await ensureUser(ctx);
+    const channel = await ctx.db.get(args.channelId);
+    if (!channel) throw new Error(`Channel not found: ${args.channelId}`);
+    if (channel.isProtected) {
+      throw new Error(`Cannot leave the ${channel.slug} channel.`);
+    }
+
+    const membership = await ctx.db
+      .query("channelMembers")
+      .withIndex("by_user_and_channel", (q) =>
+        q.eq("userId", user._id).eq("channelId", channel._id),
+      )
+      .unique();
+    if (membership) await ctx.db.delete(membership._id);
+  },
+});
