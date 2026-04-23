@@ -999,3 +999,59 @@ test("channels.listMine with no readState row counts every non-own, non-deleted 
   const general = list.find((c: { slug: string }) => c.slug === "general")!;
   expect(general.unreadCount).toBe(2);
 });
+
+test("channels.deleteChannel cascades reactions, typingIndicators, channelReadStates", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, channelId, orgId } = await seedAcmeWithGeneral(t);
+  // Seed a non-protected channel we can delete.
+  const delChannelId = await t.run(async (ctx) => {
+    const id = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "doomed",
+      name: "Doomed",
+      createdBy: userId,
+      isProtected: false,
+    });
+    await ctx.db.insert("channelMembers", { channelId: id, userId, organizationId: orgId });
+    const msg = await ctx.db.insert("messages", { channelId: id, userId, text: "x" });
+    await ctx.db.insert("reactions", {
+      messageId: msg,
+      userId,
+      emoji: "👍",
+      channelId: id,
+    });
+    await ctx.db.insert("typingIndicators", {
+      channelId: id,
+      userId,
+      organizationId: orgId,
+      expiresAt: Date.now() + 5000,
+    });
+    await ctx.db.insert("channelReadStates", {
+      channelId: id,
+      userId,
+      organizationId: orgId,
+      lastReadAt: Date.now(),
+    });
+    return id;
+  });
+  // Silence unused warning from the seeded channelId.
+  expect(channelId).toBeTruthy();
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  await asJane.mutation(api.channels.deleteChannel, { channelId: delChannelId });
+
+  // Let scheduled self-reschedule settle.
+  await t.finishInProgressScheduledFunctions();
+
+  const counts = await t.run(async (ctx) => ({
+    reactions: (await ctx.db.query("reactions").withIndex("by_channel", (q) => q.eq("channelId", delChannelId)).collect()).length,
+    typing: (await ctx.db.query("typingIndicators").withIndex("by_channel", (q) => q.eq("channelId", delChannelId)).collect()).length,
+    reads: (await ctx.db.query("channelReadStates").withIndex("by_channel", (q) => q.eq("channelId", delChannelId)).collect()).length,
+    channels: (await ctx.db.query("channels").collect()).filter((c) => c._id === delChannelId).length,
+  }));
+  expect(counts).toEqual({ reactions: 0, typing: 0, reads: 0, channels: 0 });
+});

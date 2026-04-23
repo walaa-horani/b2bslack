@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { api } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 import {
   PaywallError,
@@ -132,6 +133,45 @@ export const deleteChannel = mutation({
     const { membership } = await assertMember(ctx, user._id, org.slug);
     if (membership.role !== "org:admin") {
       throw new Error("Only workspace admins can delete channels.");
+    }
+
+    // Cascade reactions (batched).
+    const reactionsBatch = await ctx.db
+      .query("reactions")
+      .withIndex("by_channel", (q) => q.eq("channelId", args.channelId))
+      .take(256);
+    for (const r of reactionsBatch) await ctx.db.delete(r._id);
+    if (reactionsBatch.length === 256) {
+      await ctx.scheduler.runAfter(0, api.channels.deleteChannel, {
+        channelId: args.channelId,
+      });
+      return;
+    }
+
+    // Cascade typingIndicators (batched).
+    const typingBatch = await ctx.db
+      .query("typingIndicators")
+      .withIndex("by_channel", (q) => q.eq("channelId", args.channelId))
+      .take(256);
+    for (const r of typingBatch) await ctx.db.delete(r._id);
+    if (typingBatch.length === 256) {
+      await ctx.scheduler.runAfter(0, api.channels.deleteChannel, {
+        channelId: args.channelId,
+      });
+      return;
+    }
+
+    // Cascade channelReadStates (batched).
+    const readsBatch = await ctx.db
+      .query("channelReadStates")
+      .withIndex("by_channel", (q) => q.eq("channelId", args.channelId))
+      .take(256);
+    for (const r of readsBatch) await ctx.db.delete(r._id);
+    if (readsBatch.length === 256) {
+      await ctx.scheduler.runAfter(0, api.channels.deleteChannel, {
+        channelId: args.channelId,
+      });
+      return;
     }
 
     // Cascade messages (batched).
