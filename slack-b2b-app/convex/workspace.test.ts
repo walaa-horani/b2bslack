@@ -108,12 +108,59 @@ test("getOverview returns org + user + role for a member", async () => {
   const overview = await asJane.query(api.workspace.getOverview, {
     slug: "acme",
   });
-  expect(overview).toEqual({
+  expect(overview).toMatchObject({
     orgName: "Acme",
     orgSlug: "acme",
     userName: "Jane Doe",
     role: "org:admin",
+    planKey: null,
   });
+  // Free features by default (no planKey set).
+  expect(overview.features).toEqual(
+    expect.arrayContaining(["public_channels", "basic_messaging"]),
+  );
+});
+
+test("getOverview returns planKey + Pro features for a Pro org", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    const userId = await ctx.db.insert("users", {
+      clerkUserId: "user_abc",
+      tokenIdentifier: TOKEN,
+      email: "jane@example.com",
+      name: "Jane Doe",
+    });
+    const orgId = await ctx.db.insert("organizations", {
+      clerkOrgId: "org_1",
+      slug: "acme",
+      name: "Acme",
+      planKey: "pro",
+    });
+    await ctx.db.insert("memberships", {
+      userId,
+      organizationId: orgId,
+      clerkMembershipId: "orgmem_1",
+      role: "org:admin",
+    });
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const overview = await asJane.query(api.workspace.getOverview, {
+    slug: "acme",
+  });
+  expect(overview.planKey).toBe("pro");
+  expect(overview.features).toEqual(
+    expect.arrayContaining([
+      "public_channels",
+      "basic_messaging",
+      "private_channels",
+      "unlimited_message_history",
+    ]),
+  );
 });
 
 test("getOverview throws for non-member when org exists", async () => {
@@ -158,4 +205,74 @@ test("getOverview throws for unknown workspace slug", async () => {
   await expect(
     asJane.query(api.workspace.getOverview, { slug: "nonexistent" }),
   ).rejects.toThrow(/Unknown workspace/);
+});
+
+// ---------- listMembers (R10) ----------
+
+test("workspace.listMembers returns all members with user info", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    const janeId = await ctx.db.insert("users", {
+      clerkUserId: "user_abc",
+      tokenIdentifier: TOKEN,
+      email: "jane@example.com",
+      name: "Jane Doe",
+    });
+    const orgId = await ctx.db.insert("organizations", {
+      clerkOrgId: "org_1",
+      slug: "acme",
+      name: "Acme",
+    });
+    await ctx.db.insert("memberships", {
+      userId: janeId,
+      organizationId: orgId,
+      clerkMembershipId: "orgmem_1",
+      role: "org:admin",
+    });
+    const bobId = await ctx.db.insert("users", {
+      clerkUserId: "user_bob",
+      tokenIdentifier: `${ISSUER}|user_bob`,
+      email: "bob@example.com",
+      name: "Bob",
+    });
+    await ctx.db.insert("memberships", {
+      userId: bobId,
+      organizationId: orgId,
+      clerkMembershipId: "orgmem_bob",
+      role: "org:member",
+    });
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const members = await asJane.query(api.workspace.listMembers, {
+    workspaceSlug: "acme",
+  });
+  expect(members).toHaveLength(2);
+  const names = members.map((m) => m.user.name).sort();
+  expect(names).toEqual(["Bob", "Jane Doe"]);
+  expect(members.find((m) => m.user.name === "Jane Doe")?.role).toBe("org:admin");
+  expect(members.find((m) => m.user.name === "Bob")?.role).toBe("org:member");
+});
+
+test("workspace.listMembers rejects non-members", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("organizations", {
+      clerkOrgId: "org_1",
+      slug: "acme",
+      name: "Acme",
+    });
+  });
+  const asStranger = t.withIdentity({
+    tokenIdentifier: `${ISSUER}|user_stranger`,
+    subject: "user_stranger",
+    email: "stranger@example.com",
+  });
+  await expect(
+    asStranger.query(api.workspace.listMembers, { workspaceSlug: "acme" }),
+  ).rejects.toThrow(/authenticated|Not a member/i);
 });
