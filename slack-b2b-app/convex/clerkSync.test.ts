@@ -448,3 +448,79 @@ test("deleteMembership cascades channelMembers within the workspace only", async
   expect(cmembers).toHaveLength(1);
   expect(cmembers[0].organizationId).toBe(orgBId); // Beta membership still here
 });
+
+test("deleteOrganization cascades channels, messages, and channelMembers", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    const userId = await ctx.db.insert("users", {
+      clerkUserId: "user_abc",
+      tokenIdentifier: `${ISSUER}|user_abc`,
+      email: "jane@example.com",
+    });
+    const orgId = await ctx.db.insert("organizations", {
+      clerkOrgId: "org_1",
+      slug: "acme",
+      name: "Acme",
+    });
+    await ctx.db.insert("memberships", {
+      userId,
+      organizationId: orgId,
+      clerkMembershipId: "orgmem_1",
+      role: "org:admin",
+    });
+    const generalId = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "general",
+      name: "General",
+      createdBy: userId,
+      isProtected: true,
+    });
+    const alphaId = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "project-alpha",
+      name: "Project Alpha",
+      createdBy: userId,
+      isProtected: false,
+    });
+    await ctx.db.insert("channelMembers", {
+      userId,
+      channelId: generalId,
+      organizationId: orgId,
+    });
+    await ctx.db.insert("channelMembers", {
+      userId,
+      channelId: alphaId,
+      organizationId: orgId,
+    });
+    await ctx.db.insert("messages", {
+      channelId: generalId,
+      userId,
+      text: "hello",
+    });
+    await ctx.db.insert("messages", {
+      channelId: alphaId,
+      userId,
+      text: "alpha",
+    });
+  });
+
+  await t.mutation(internal.clerkSync.deleteOrganization, {
+    clerkOrgId: "org_1",
+  });
+
+  expect(
+    await t.run(async (ctx) => await ctx.db.query("organizations").collect()),
+  ).toHaveLength(0);
+  expect(
+    await t.run(async (ctx) => await ctx.db.query("memberships").collect()),
+  ).toHaveLength(0);
+  expect(
+    await t.run(async (ctx) => await ctx.db.query("channels").collect()),
+  ).toHaveLength(0);
+  expect(
+    await t.run(async (ctx) => await ctx.db.query("channelMembers").collect()),
+  ).toHaveLength(0);
+  expect(
+    await t.run(async (ctx) => await ctx.db.query("messages").collect()),
+  ).toHaveLength(0);
+});

@@ -115,12 +115,35 @@ export const deleteOrganization = internalMutation({
       .unique();
     if (!org) return;
 
+    // 1. Channels + their cascades (messages, channelMembers).
+    const channels = await ctx.db
+      .query("channels")
+      .withIndex("by_organization", (q) => q.eq("organizationId", org._id))
+      .take(256);
+    for (const ch of channels) {
+      const messages = await ctx.db
+        .query("messages")
+        .withIndex("by_channel", (q) => q.eq("channelId", ch._id))
+        .take(256);
+      for (const msg of messages) await ctx.db.delete(msg._id);
+
+      const cmembers = await ctx.db
+        .query("channelMembers")
+        .withIndex("by_channel", (q) => q.eq("channelId", ch._id))
+        .take(256);
+      for (const cm of cmembers) await ctx.db.delete(cm._id);
+
+      await ctx.db.delete(ch._id);
+    }
+
+    // 2. Workspace memberships (Foundation cascade behavior).
     const memberships = await ctx.db
       .query("memberships")
       .withIndex("by_organization", (q) => q.eq("organizationId", org._id))
       .take(256);
-    for (const m of memberships) await ctx.db.delete(m._id);
+    for (const mem of memberships) await ctx.db.delete(mem._id);
 
+    // 3. The org row.
     await ctx.db.delete(org._id);
   },
 });
