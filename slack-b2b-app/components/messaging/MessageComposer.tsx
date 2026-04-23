@@ -4,6 +4,7 @@ import { useState, KeyboardEvent } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import { useTypingHeartbeat } from "@/hooks/useTypingHeartbeat";
 
 const MAX = 4000;
 
@@ -15,6 +16,7 @@ export function MessageComposer({
   const [text, setText] = useState("");
   const [pending, setPending] = useState(false);
   const send = useMutation(api.messages.send);
+  const typing = useTypingHeartbeat(channelId);
 
   const disabled = pending || !text.trim() || text.length > MAX;
 
@@ -24,6 +26,7 @@ export function MessageComposer({
     try {
       await send({ channelId, text });
       setText("");
+      typing.onSend();
     } finally {
       setPending(false);
     }
@@ -41,8 +44,13 @@ export function MessageComposer({
       <div className="flex gap-2">
         <textarea
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            typing.onKey();
+          }}
           onKeyDown={onKeyDown}
+          onBlur={typing.onBlur}
+          onFocus={typing.onFocus}
           placeholder="Message #channel"
           rows={2}
           maxLength={MAX + 100}
