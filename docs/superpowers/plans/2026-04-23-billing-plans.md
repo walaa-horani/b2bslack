@@ -2,9 +2,31 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+---
+
+## ⚠ REVISION 2026-04-23 — webhook fallback engaged
+
+Task 1 (JWT-template route) failed when executed: Clerk does not expose `{{org.plan}}` / `{{org.features}}` / `{{org.subscription.*}}` shortcodes in any documented form. `has()` is the only officially-supported API for plan/feature checks and Convex cannot call it. This matched the spec's Option-B failure condition, so we pivoted to a webhook-mirrored design. **All original Tasks 1, 2, 3, 10 are superseded by the revised sequence below. Tasks 4–9 and 11–19 apply unchanged except for call-signature tweaks noted inline.**
+
+**Revised architecture:** Plan state is stored in `organizations.planKey` in Convex, mirrored from Clerk via a `subscriptionItem.active | .updated | .canceled` webhook. Features are derived from a static plan→features map in `convex/billing.ts` (no feature list stored per org). `assertFeature(org, featureKey)` is a pure function taking the already-loaded org row — no JWT claim reads.
+
+**Revised task order:**
+1. **R1** — Clean up failed JWT-route artifacts + remove `org_plan`/`org_features` from Clerk `convex` JWT template (manual).
+2. **R2** — Create `convex/billing.ts` with plan constants + `FEATURES_BY_PLAN` map + `featuresForPlan()` + `hasFeature()` helpers.
+3. **R3** — Add `planKey: v.optional(v.string())` column to `organizations` in `convex/schema.ts`.
+4. **R4** — Wire Clerk billing webhook → `internal.clerkSync.setOrgPlan` (new events: `subscriptionItem.active | .updated | .canceled`). Includes a "log + inspect + code to real shape" step (like old Task 1 Step 4, but for webhook payloads).
+5. **R5** — Add `PaywallError`, `assertFeature(org, featureKey)`, `getFeatures(org)` to `convex/auth.ts` + tests that seed an org with a planKey.
+6. **R6–R10** — Original Tasks 4–9 with this single change: **each `assertFeature(ctx, featureKey)` call becomes `assertFeature(org, featureKey)`, where `org` is the row returned by `assertMember`**. Tests seed the org with `planKey: "pro"` or `"free_org"` instead of setting JWT claims via `t.withIdentity`.
+7. **R11** — Extend `workspace.getOverview` to return `planKey` + `features` (derived). Replace original Task 10's `useHasFeature` hook with a version that reads from `getOverview` via a Convex query, not Clerk session claims.
+8. **R12–R19** — Original Tasks 11–19 unchanged.
+
+The rest of this document remains for historical reference. Where an old Task's signature conflicts with the revision, follow the revision. Revised task bodies live in the "Revised Tasks" section at the bottom of this file (added after original Task 19 during execution).
+
+---
+
 **Goal:** Ship Free + Pro organization plans via Clerk Billing on top of Messaging core, following [docs/superpowers/specs/2026-04-23-billing-plans-design.md](../specs/2026-04-23-billing-plans-design.md). Two gates: private channels (Pro only) and a 10,000-message history cap per channel (Free).
 
-**Architecture:** Plan/feature state is read from the Clerk session JWT via `ctx.auth.getUserIdentity()` — no Convex mirror, no billing webhooks. One Convex helper `assertFeature()` throws a typed `PaywallError` when the active org lacks a feature. Three gate sites: `channels.create({isPrivate: true})`, `channels.invite` (on private channels), `messages.list` (history cap). UI adds a `/[slug]/settings/billing` route hosting Clerk's `<PricingTable/>`, plus an Upgrade pill, Private checkbox, and history-cap card.
+**Architecture (superseded — see revision above):** Plan/feature state is read from the Clerk session JWT via `ctx.auth.getUserIdentity()` — no Convex mirror, no billing webhooks. One Convex helper `assertFeature()` throws a typed `PaywallError` when the active org lacks a feature. Three gate sites: `channels.create({isPrivate: true})`, `channels.invite` (on private channels), `messages.list` (history cap). UI adds a `/[slug]/settings/billing` route hosting Clerk's `<PricingTable/>`, plus an Upgrade pill, Private checkbox, and history-cap card.
 
 **Tech Stack:** Next.js 16 App Router, React 19, `@clerk/nextjs` 6.39.1 (with Billing enabled), Convex 1.35.1, `convex-test`, `vitest`, Tailwind 4. No new dependencies.
 
