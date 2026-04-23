@@ -69,3 +69,27 @@ export async function assertMember(
 
   return { org, membership };
 }
+
+/**
+ * Throws if the user is not a member of the channel. Also verifies the
+ * channel belongs to the given organization (defense-in-depth against
+ * cross-workspace data leaks).
+ */
+export async function assertChannelMember(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+  channelId: Id<"channels">,
+): Promise<{ channel: Doc<"channels">; member: Doc<"channelMembers"> }> {
+  const channel = await ctx.db.get(channelId);
+  if (!channel) throw new Error(`Channel not found: ${channelId}`);
+
+  const member = await ctx.db
+    .query("channelMembers")
+    .withIndex("by_user_and_channel", (q) =>
+      q.eq("userId", userId).eq("channelId", channel._id),
+    )
+    .unique();
+  if (!member) throw new Error(`Not a channel member: ${channel.slug}`);
+
+  return { channel, member };
+}
