@@ -60,4 +60,35 @@ export default defineSchema({
     deletedAt: v.optional(v.number()),
   })
     .index("by_channel", ["channelId"]),
+
+  reactions: defineTable({
+    messageId: v.id("messages"),
+    userId: v.id("users"),
+    emoji: v.string(),
+    channelId: v.id("channels"),
+  })
+    .index("by_message", ["messageId"])
+    .index("by_message_user_emoji", ["messageId", "userId", "emoji"])
+    .index("by_channel", ["channelId"])
+    .index("by_user_and_channel", ["userId", "channelId"]),
+
+  typingIndicators: defineTable({
+    channelId: v.id("channels"),
+    userId: v.id("users"),
+    organizationId: v.id("organizations"),
+    expiresAt: v.number(),
+  })
+    .index("by_channel", ["channelId"])
+    .index("by_channel_and_user", ["channelId", "userId"])
+    .index("by_user_and_organization", ["userId", "organizationId"]),
+
+  channelReadStates: defineTable({
+    userId: v.id("users"),
+    channelId: v.id("channels"),
+    organizationId: v.id("organizations"),
+    lastReadAt: v.number(),
+  })
+    .index("by_user_and_channel", ["userId", "channelId"])
+    .index("by_user_and_organization", ["userId", "organizationId"])
+    .index("by_channel", ["channelId"]),
 });
