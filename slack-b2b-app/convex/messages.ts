@@ -24,3 +24,50 @@ export const send = mutation({
     });
   },
 });
+
+export const list = query({
+  args: {
+    channelId: v.id("channels"),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Not authenticated");
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_token_identifier", (q) =>
+        q.eq("tokenIdentifier", identity.tokenIdentifier),
+      )
+      .unique();
+    if (!user) throw new Error("Not a channel member: no user record");
+    await assertChannelMember(ctx, user._id, args.channelId);
+
+    const result = await ctx.db
+      .query("messages")
+      .withIndex("by_channel", (q) => q.eq("channelId", args.channelId))
+      .order("desc")
+      .paginate(args.paginationOpts);
+
+    // Join author info server-side so the client doesn't N+1.
+    const authorIds = [...new Set(result.page.map((m) => m.userId))];
+    const authors = await Promise.all(authorIds.map((id) => ctx.db.get(id)));
+    const authorById = new Map(
+      authors
+        .filter((a): a is NonNullable<typeof a> => a !== null)
+        .map((a) => [a._id, a]),
+    );
+
+    return {
+      ...result,
+      page: result.page.map((message) => {
+        const a = authorById.get(message.userId);
+        return {
+          message,
+          author: a
+            ? { _id: a._id, name: a.name ?? null, imageUrl: a.imageUrl ?? null }
+            : { _id: message.userId, name: null, imageUrl: null },
+        };
+      }),
+    };
+  },
+});

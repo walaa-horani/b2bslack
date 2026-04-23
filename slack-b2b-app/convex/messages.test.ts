@@ -131,3 +131,89 @@ test("messages.send rejects non-channel-member", async () => {
     }),
   ).rejects.toThrow(/Not a channel member/);
 });
+
+// ---------- list ----------
+
+test("messages.list returns paginated messages with author info, newest-first", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, channelId } = await seedAcmeWithGeneral(t);
+  await t.run(async (ctx) => {
+    for (let i = 0; i < 5; i++) {
+      await ctx.db.insert("messages", {
+        channelId,
+        userId,
+        text: `msg ${i}`,
+      });
+    }
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const page = await asJane.query(api.messages.list, {
+    channelId,
+    paginationOpts: { numItems: 3, cursor: null },
+  });
+
+  expect(page.page).toHaveLength(3);
+  // Newest first (desc _creationTime). Last-inserted is msg 4.
+  expect(page.page[0].message.text).toBe("msg 4");
+  expect(page.page[2].message.text).toBe("msg 2");
+  expect(page.page[0].author.name).toBe("Jane Doe");
+  expect(page.isDone).toBe(false);
+});
+
+test("messages.list paginates via continueCursor", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, channelId } = await seedAcmeWithGeneral(t);
+  await t.run(async (ctx) => {
+    for (let i = 0; i < 7; i++) {
+      await ctx.db.insert("messages", {
+        channelId,
+        userId,
+        text: `msg ${i}`,
+      });
+    }
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const p1 = await asJane.query(api.messages.list, {
+    channelId,
+    paginationOpts: { numItems: 3, cursor: null },
+  });
+  const p2 = await asJane.query(api.messages.list, {
+    channelId,
+    paginationOpts: { numItems: 3, cursor: p1.continueCursor },
+  });
+  const p3 = await asJane.query(api.messages.list, {
+    channelId,
+    paginationOpts: { numItems: 3, cursor: p2.continueCursor },
+  });
+
+  expect(p1.page).toHaveLength(3);
+  expect(p2.page).toHaveLength(3);
+  expect(p3.page).toHaveLength(1);
+  expect(p3.isDone).toBe(true);
+});
+
+test("messages.list throws for non-channel-member", async () => {
+  const t = convexTest(schema, modules);
+  const { channelId } = await seedAcmeWithGeneral(t);
+  const asIntruder = t.withIdentity({
+    tokenIdentifier: `${ISSUER}|user_intruder`,
+    subject: "user_intruder",
+    email: "intruder@example.com",
+  });
+  await expect(
+    asIntruder.query(api.messages.list, {
+      channelId,
+      paginationOpts: { numItems: 30, cursor: null },
+    }),
+  ).rejects.toThrow(/Not a channel member/);
+});
