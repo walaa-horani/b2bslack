@@ -378,3 +378,73 @@ test("upsertMembership on a second member does NOT duplicate #general", async ()
   );
   expect(cmembers).toHaveLength(2); // one per user
 });
+
+test("deleteMembership cascades channelMembers within the workspace only", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, orgAId, orgBId, memAId, memBId, acmeGeneralId, betaGeneralId } =
+    await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {
+        clerkUserId: "user_abc",
+        tokenIdentifier: `${ISSUER}|user_abc`,
+        email: "jane@example.com",
+      });
+      const orgAId = await ctx.db.insert("organizations", {
+        clerkOrgId: "org_A",
+        slug: "acme",
+        name: "Acme",
+      });
+      const orgBId = await ctx.db.insert("organizations", {
+        clerkOrgId: "org_B",
+        slug: "beta",
+        name: "Beta",
+      });
+      const memAId = await ctx.db.insert("memberships", {
+        userId,
+        organizationId: orgAId,
+        clerkMembershipId: "orgmem_A",
+        role: "org:admin",
+      });
+      const memBId = await ctx.db.insert("memberships", {
+        userId,
+        organizationId: orgBId,
+        clerkMembershipId: "orgmem_B",
+        role: "org:member",
+      });
+      const acmeGeneralId = await ctx.db.insert("channels", {
+        organizationId: orgAId,
+        slug: "general",
+        name: "General",
+        createdBy: userId,
+        isProtected: true,
+      });
+      const betaGeneralId = await ctx.db.insert("channels", {
+        organizationId: orgBId,
+        slug: "general",
+        name: "General",
+        createdBy: userId,
+        isProtected: true,
+      });
+      await ctx.db.insert("channelMembers", {
+        userId,
+        channelId: acmeGeneralId,
+        organizationId: orgAId,
+      });
+      await ctx.db.insert("channelMembers", {
+        userId,
+        channelId: betaGeneralId,
+        organizationId: orgBId,
+      });
+      return { userId, orgAId, orgBId, memAId, memBId, acmeGeneralId, betaGeneralId };
+    });
+
+  // Delete the Acme membership only.
+  await t.mutation(internal.clerkSync.deleteMembership, {
+    clerkMembershipId: "orgmem_A",
+  });
+
+  const cmembers = await t.run(
+    async (ctx) => await ctx.db.query("channelMembers").collect(),
+  );
+  expect(cmembers).toHaveLength(1);
+  expect(cmembers[0].organizationId).toBe(orgBId); // Beta membership still here
+});

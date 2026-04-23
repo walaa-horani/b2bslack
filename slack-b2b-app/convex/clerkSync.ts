@@ -229,12 +229,25 @@ export const upsertMembership = internalMutation({
 export const deleteMembership = internalMutation({
   args: { clerkMembershipId: v.string() },
   handler: async (ctx, { clerkMembershipId }) => {
-    const m = await ctx.db
+    const membership = await ctx.db
       .query("memberships")
       .withIndex("by_clerk_membership_id", (q) =>
         q.eq("clerkMembershipId", clerkMembershipId),
       )
       .unique();
-    if (m) await ctx.db.delete(m._id);
+    if (!membership) return;
+
+    // Remove this user from every channel in this workspace.
+    const channelMemberships = await ctx.db
+      .query("channelMembers")
+      .withIndex("by_user_and_organization", (q) =>
+        q
+          .eq("userId", membership.userId)
+          .eq("organizationId", membership.organizationId),
+      )
+      .take(256);
+    for (const cm of channelMemberships) await ctx.db.delete(cm._id);
+
+    await ctx.db.delete(membership._id);
   },
 });
