@@ -9,6 +9,7 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as billing from "../billing.js";
 import type * as channels from "../channels.js";
 import type * as clerkSync from "../clerkSync.js";
 import type * as http from "../http.js";
@@ -24,6 +25,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  billing: typeof billing;
   channels: typeof channels;
   clerkSync: typeof clerkSync;
   http: typeof http;

@@ -2,6 +2,11 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";
 import { assertChannelMember, ensureUser } from "./auth";
+import {
+  FEATURE_UNLIMITED_MESSAGE_HISTORY,
+  FREE_MESSAGE_HISTORY_CAP,
+  hasFeature,
+} from "./billing";
 
 const MAX_TEXT_LEN = 4000;
 
@@ -40,13 +45,38 @@ export const list = query({
       )
       .unique();
     if (!user) throw new Error("Not a channel member: no user record");
-    await assertChannelMember(ctx, user._id, args.channelId);
+    const { channel } = await assertChannelMember(ctx, user._id, args.channelId);
 
-    const result = await ctx.db
+    // Free-plan history cap: enforce a 10,000-message ceiling per channel.
+    // Pro plans with unlimited_message_history skip the probe entirely.
+    const org = await ctx.db.get(channel.organizationId);
+    const hasUnlimited = org
+      ? hasFeature(org, FEATURE_UNLIMITED_MESSAGE_HISTORY)
+      : false;
+
+    let cutoffCreationTime: number | null = null;
+    let cappedByPlan = false;
+    if (!hasUnlimited) {
+      const capProbe = await ctx.db
+        .query("messages")
+        .withIndex("by_channel", (q) => q.eq("channelId", args.channelId))
+        .order("desc")
+        .take(FREE_MESSAGE_HISTORY_CAP + 1);
+      if (capProbe.length > FREE_MESSAGE_HISTORY_CAP) {
+        cutoffCreationTime = capProbe[FREE_MESSAGE_HISTORY_CAP - 1]._creationTime;
+        cappedByPlan = true;
+      }
+    }
+
+    let q = ctx.db
       .query("messages")
-      .withIndex("by_channel", (q) => q.eq("channelId", args.channelId))
-      .order("desc")
-      .paginate(args.paginationOpts);
+      .withIndex("by_channel", (qq) => qq.eq("channelId", args.channelId))
+      .order("desc");
+    if (cutoffCreationTime !== null) {
+      const cutoff = cutoffCreationTime;
+      q = q.filter((f) => f.gte(f.field("_creationTime"), cutoff));
+    }
+    const result = await q.paginate(args.paginationOpts);
 
     // Join author info server-side so the client doesn't N+1.
     const authorIds = [...new Set(result.page.map((m) => m.userId))];
@@ -59,6 +89,7 @@ export const list = query({
 
     return {
       ...result,
+      cappedByPlan,
       page: result.page.map((message) => {
         const a = authorById.get(message.userId);
         return {
@@ -69,6 +100,39 @@ export const list = query({
         };
       }),
     };
+  },
+});
+
+/**
+ * Thin helper for the MessageList "cap hit" card. Returns only the flag so the
+ * component can render the upgrade prompt without re-running the full list.
+ */
+export const historyStatus = query({
+  args: { channelId: v.id("channels") },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Not authenticated");
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_token_identifier", (q) =>
+        q.eq("tokenIdentifier", identity.tokenIdentifier),
+      )
+      .unique();
+    if (!user) throw new Error("Not a channel member: no user record");
+    const { channel } = await assertChannelMember(ctx, user._id, args.channelId);
+
+    const org = await ctx.db.get(channel.organizationId);
+    const hasUnlimited = org
+      ? hasFeature(org, FEATURE_UNLIMITED_MESSAGE_HISTORY)
+      : false;
+    if (hasUnlimited) return { cappedByPlan: false };
+
+    const probe = await ctx.db
+      .query("messages")
+      .withIndex("by_channel", (q) => q.eq("channelId", args.channelId))
+      .order("desc")
+      .take(FREE_MESSAGE_HISTORY_CAP + 1);
+    return { cappedByPlan: probe.length > FREE_MESSAGE_HISTORY_CAP };
   },
 });
 
