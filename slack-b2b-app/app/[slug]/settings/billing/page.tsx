@@ -15,7 +15,10 @@ export default function BillingPage({
       <p className="text-sm text-zinc-500 mb-6">
         Manage your workspace&apos;s subscription. Changes take effect within about a minute.
       </p>
-      <PricingTable newSubscriptionRedirectUrl={`/${slug}/channels/general`} />
+      <PricingTable
+        for="organization"
+        newSubscriptionRedirectUrl={`/${slug}/channels/general`}
+      />
     </div>
   );
 }

@@ -6,21 +6,43 @@
 
 ## ⚠ REVISION 2026-04-23 — webhook fallback engaged
 
-Task 1 (JWT-template route) failed when executed: Clerk does not expose `{{org.plan}}` / `{{org.features}}` / `{{org.subscription.*}}` shortcodes in any documented form. `has()` is the only officially-supported API for plan/feature checks and Convex cannot call it. This matched the spec's Option-B failure condition, so we pivoted to a webhook-mirrored design. **All original Tasks 1, 2, 3, 10 are superseded by the revised sequence below. Tasks 4–9 and 11–19 apply unchanged except for call-signature tweaks noted inline.**
+Task 1 (JWT-template route) failed when executed: Clerk does not expose `{{org.plan}}` / `{{org.features}}` / `{{org.subscription.*}}` shortcodes in any documented form. `has()` is the only officially-supported API for plan/feature checks and Convex cannot call it. This matched the spec's Option-B failure condition, so we pivoted to a webhook-mirrored design.
 
-**Revised architecture:** Plan state is stored in `organizations.planKey` in Convex, mirrored from Clerk via a `subscriptionItem.active | .updated | .canceled` webhook. Features are derived from a static plan→features map in `convex/billing.ts` (no feature list stored per org). `assertFeature(org, featureKey)` is a pure function taking the already-loaded org row — no JWT claim reads.
+**Revised architecture:** Plan state is stored in `organizations.planKey` in Convex, mirrored from Clerk via a `subscriptionItem.active | .updated | .canceled | .ended` webhook. Features are derived from a static plan→features map in `convex/billing.ts` (no feature list stored per org). `assertFeature(org, featureKey)` is a pure function taking the already-loaded org row — no JWT claim reads.
 
-**Revised task order:**
-1. **R1** — Clean up failed JWT-route artifacts + remove `org_plan`/`org_features` from Clerk `convex` JWT template (manual).
-2. **R2** — Create `convex/billing.ts` with plan constants + `FEATURES_BY_PLAN` map + `featuresForPlan()` + `hasFeature()` helpers.
-3. **R3** — Add `planKey: v.optional(v.string())` column to `organizations` in `convex/schema.ts`.
-4. **R4** — Wire Clerk billing webhook → `internal.clerkSync.setOrgPlan` (new events: `subscriptionItem.active | .updated | .canceled`). Includes a "log + inspect + code to real shape" step (like old Task 1 Step 4, but for webhook payloads).
-5. **R5** — Add `PaywallError`, `assertFeature(org, featureKey)`, `getFeatures(org)` to `convex/auth.ts` + tests that seed an org with a planKey.
-6. **R6–R10** — Original Tasks 4–9 with this single change: **each `assertFeature(ctx, featureKey)` call becomes `assertFeature(org, featureKey)`, where `org` is the row returned by `assertMember`**. Tests seed the org with `planKey: "pro"` or `"free_org"` instead of setting JWT claims via `t.withIdentity`.
-7. **R11** — Extend `workspace.getOverview` to return `planKey` + `features` (derived). Replace original Task 10's `useHasFeature` hook with a version that reads from `getOverview` via a Convex query, not Clerk session claims.
-8. **R12–R19** — Original Tasks 11–19 unchanged.
+### Execution status (2026-04-23, updated after each landing commit)
 
-The rest of this document remains for historical reference. Where an old Task's signature conflicts with the revision, follow the revision. Revised task bodies live in the "Revised Tasks" section at the bottom of this file (added after original Task 19 during execution).
+| Task | Status | Commit |
+|---|---|---|
+| R1  — Cleanup + trim JWT template | ✅ done | `1bfe457` (schema+billing) — debug artifacts removed pre-commit |
+| R2  — `convex/billing.ts` constants + `featuresForPlan` + `hasFeature` | ✅ done | `1bfe457` |
+| R3  — `planKey` column on `organizations` | ✅ done | `1bfe457` |
+| R4  — Clerk billing webhook → `setOrgPlan` | ✅ **done, live-verified** | `ab42114` (code), real Pro checkout confirmed writing `planKey: "pro"` |
+| R5  — `PaywallError` + `assertFeature(org, fk)` + 9 tests | ✅ done | `26c6a84` |
+| R6  — `isPrivate` column on `channels` | ✅ done | `362b4f5` |
+| R7  — `channels.create({isPrivate})` gate | ✅ done | `6d35013` |
+| R8  — `channels.invite` + `channels.listChannelMembers` | ✅ done | `6d35013` |
+| R9  — `channels.listBrowsable` filter | ✅ done | `6d35013` |
+| R10 — `workspace.listMembers` + extend `getOverview` with `planKey`+`features` | ✅ done | `20cd0ae` |
+| R11 — 10k history cap in `messages.list` + `messages.historyStatus` | ✅ done | `6754c61` |
+| R12 — `hooks/useHasFeature.ts` reading from `getOverview` | ✅ done | `6754c61` |
+| R13 — `/[slug]/settings/billing` admin-guarded with `<PricingTable for="organization"/>` | ✅ done | `831704b` (+ Clerk plans require "Publicly available" toggle) |
+| R14 — Sidebar Upgrade pill + 🔒 icon | ✅ done | `6754c61` |
+| R15 — CreateChannelModal Private checkbox | ✅ done | `6754c61` |
+| R16 — InviteToChannelModal | ✅ done | `831704b` |
+| R17 — ChannelHeader Add-people button | ✅ done | `831704b` |
+| R18 — MessageList history-cap card | ✅ done | `831704b` |
+| R19 — Full test suite + build sanity check | ✅ 75/75 tests, clean build | (verified) |
+| R20 — Manual E2E (10 steps) | ⏳ in progress | — |
+| R21 — Finish: merge + tag | ⏳ pending | — |
+
+### Notes from execution
+
+- **Clerk `<PricingTable/>` needs `for="organization"`** (not `forOrganizations`) — the `for` prop takes a `ForPayerType`. Without it the table shows user plans (empty) instead of org plans.
+- **Clerk plans must have the "Publicly available" toggle ON** to appear in `<PricingTable/>`.
+- **Clerk JWT template `{{org.subscription.*}}` shortcodes do not exist** — we tested all three candidates listed in the original Task 1 and none substituted. This is why the webhook route was needed. See `MEMORY.md → clerk_billing_jwt_limitation.md` for future reference.
+- **Webhook payload shape**: `data.payer.organization_id` carries the Clerk org ID; `data.plan` is a plan object and `data.plan_id` is a flat ID. Test events (from Clerk's "Send Example" button) use empty `organization_id`, so the extractor's no-op on those is correct. A real subscription populates it.
+- **Post-subscribe redirect** `/[slug]/channels/general` will 404 in workspaces that don't have a `#general` channel. Non-blocking for billing; either trust the `upsertMembership` handler's general-channel seed (existing code), or change `newSubscriptionRedirectUrl` to `/[slug]` if stuck.
 
 ---
 
