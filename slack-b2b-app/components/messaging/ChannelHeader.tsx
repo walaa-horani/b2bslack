@@ -7,15 +7,19 @@ export function ChannelHeader({
   slug,
   memberCount,
   isProtected,
+  isPrivate,
   isAdmin,
   onDelete,
+  onAddPeople,
 }: {
   name: string;
   slug: string;
   memberCount: number;
   isProtected: boolean;
+  isPrivate: boolean;
   isAdmin: boolean;
   onDelete: () => Promise<void>;
+  onAddPeople?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -23,12 +27,20 @@ export function ChannelHeader({
     <header className="flex items-center justify-between px-4 py-2 border-b bg-white dark:bg-zinc-950">
       <div>
         <h1 className="font-semibold">
-          <span className="text-zinc-400">#</span> {name}
+          <span className="text-zinc-400">{isPrivate ? "🔒" : "#"}</span> {name}
         </h1>
         <div className="text-xs text-zinc-500">
           {memberCount} member{memberCount === 1 ? "" : "s"}
         </div>
       </div>
+      {isPrivate && onAddPeople && (
+        <button
+          className="text-xs underline text-zinc-500 mr-2"
+          onClick={onAddPeople}
+        >
+          Add people
+        </button>
+      )}
       {isAdmin && !isProtected && (
         <div className="relative">
           <button

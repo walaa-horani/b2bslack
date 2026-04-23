@@ -1,6 +1,8 @@
 "use client";
 
 import { useLayoutEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useParams } from "next/navigation";
 import { usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -16,6 +18,8 @@ export function MessageList({ channelId }: { channelId: Id<"channels"> }) {
     { channelId },
     { initialNumItems: PAGE_SIZE },
   );
+  const historyStatus = useQuery(api.messages.historyStatus, { channelId });
+  const params = useParams<{ slug: string }>();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevScrollHeightRef = useRef<number | null>(null);
@@ -68,6 +72,22 @@ export function MessageList({ channelId }: { channelId: Id<"channels"> }) {
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto min-h-0 py-2"
     >
+      {status === "Exhausted" && historyStatus?.cappedByPlan && (
+        <div className="mx-4 my-4 p-4 border border-dashed rounded text-center">
+          <div className="text-sm font-medium mb-1">
+            You&apos;ve reached your 10,000-message history.
+          </div>
+          <div className="text-xs text-zinc-500 mb-3">
+            Upgrade to Pro to see older messages.
+          </div>
+          <Link
+            href={`/${params.slug}/settings/billing`}
+            className="text-sm underline text-blue-600"
+          >
+            Upgrade to Pro →
+          </Link>
+        </div>
+      )}
       {status === "LoadingFirstPage" ? (
         <div className="text-center text-zinc-400 text-sm py-8">
           Loading messages…
