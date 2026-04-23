@@ -812,3 +812,246 @@ test("channels.listBrowsable excludes private channels", async () => {
   expect(browsable[0].slug).toBe("random");
   expect(browsable.find((c) => c.slug === "ops")).toBeUndefined();
 });
+
+// ---------- seedAcmeWithGeneral helper ----------
+
+async function seedAcmeWithGeneral(
+  t: ReturnType<typeof convexTest>,
+  opts: { planKey?: string } = {},
+) {
+  return await t.run(async (ctx) => {
+    const userId = await ctx.db.insert("users", {
+      clerkUserId: "user_abc",
+      tokenIdentifier: TOKEN,
+      email: "jane@example.com",
+      name: "Jane Doe",
+    });
+    const orgId = await ctx.db.insert("organizations", {
+      clerkOrgId: "org_1",
+      slug: "acme",
+      name: "Acme",
+      planKey: opts.planKey,
+    });
+    await ctx.db.insert("memberships", {
+      userId,
+      organizationId: orgId,
+      clerkMembershipId: "orgmem_1",
+      role: "org:admin",
+    });
+    const channelId = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "general",
+      name: "General",
+      createdBy: userId,
+      isProtected: true,
+    });
+    await ctx.db.insert("channelMembers", {
+      channelId,
+      userId,
+      organizationId: orgId,
+    });
+    return { userId, orgId, channelId };
+  });
+}
+
+// ---------- listMine unread counts (Task 6) ----------
+
+test("channels.listMine returns unreadCount=0 right after markRead", async () => {
+  const t = convexTest(schema, modules);
+  const { channelId } = await seedAcmeWithGeneral(t);
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  // Someone else posts first.
+  await t.run(async (ctx) => {
+    const otherId = await ctx.db.insert("users", {
+      clerkUserId: "other",
+      tokenIdentifier: `${ISSUER}|other`,
+      email: "other@e.com",
+      name: "Other",
+    });
+    await ctx.db.insert("channelMembers", { channelId, userId: otherId, organizationId: (await ctx.db.get(channelId))!.organizationId });
+    await ctx.db.insert("messages", { channelId, userId: otherId, text: "hi" });
+  });
+  await asJane.mutation(api.reads.markRead, { channelId });
+  const list = await asJane.query(api.channels.listMine, { workspaceSlug: "acme" });
+  const general = list.find((c: { slug: string }) => c.slug === "general")!;
+  expect(general.unreadCount).toBe(0);
+  expect(general.overflow).toBe(false);
+});
+
+test("channels.listMine counts messages after lastReadAt", async () => {
+  const t = convexTest(schema, modules);
+  const { channelId } = await seedAcmeWithGeneral(t);
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  await asJane.mutation(api.reads.markRead, { channelId });
+  await new Promise((r) => setTimeout(r, 5));
+  await t.run(async (ctx) => {
+    const otherId = await ctx.db.insert("users", {
+      clerkUserId: "other",
+      tokenIdentifier: `${ISSUER}|other`,
+      email: "other@e.com",
+      name: "Other",
+    });
+    const orgId = (await ctx.db.get(channelId))!.organizationId;
+    await ctx.db.insert("channelMembers", { channelId, userId: otherId, organizationId: orgId });
+    for (let i = 0; i < 3; i++) {
+      await ctx.db.insert("messages", { channelId, userId: otherId, text: `m${i}` });
+    }
+  });
+  const list = await asJane.query(api.channels.listMine, { workspaceSlug: "acme" });
+  const general = list.find((c: { slug: string }) => c.slug === "general")!;
+  expect(general.unreadCount).toBe(3);
+  expect(general.overflow).toBe(false);
+});
+
+test("channels.listMine excludes own messages and tombstones from unreadCount", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, channelId } = await seedAcmeWithGeneral(t);
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  await asJane.mutation(api.reads.markRead, { channelId });
+  await new Promise((r) => setTimeout(r, 5));
+  await t.run(async (ctx) => {
+    const otherId = await ctx.db.insert("users", {
+      clerkUserId: "other",
+      tokenIdentifier: `${ISSUER}|other`,
+      email: "other@e.com",
+      name: "Other",
+    });
+    const orgId = (await ctx.db.get(channelId))!.organizationId;
+    await ctx.db.insert("channelMembers", { channelId, userId: otherId, organizationId: orgId });
+    // 2 from self (ignored), 1 from other (counted), 1 tombstoned from other (ignored).
+    await ctx.db.insert("messages", { channelId, userId, text: "self-a" });
+    await ctx.db.insert("messages", { channelId, userId, text: "self-b" });
+    await ctx.db.insert("messages", { channelId, userId: otherId, text: "other-alive" });
+    await ctx.db.insert("messages", {
+      channelId,
+      userId: otherId,
+      text: "other-deleted",
+      deletedAt: Date.now(),
+    });
+  });
+  const list = await asJane.query(api.channels.listMine, { workspaceSlug: "acme" });
+  const general = list.find((c: { slug: string }) => c.slug === "general")!;
+  expect(general.unreadCount).toBe(1);
+});
+
+test("channels.listMine caps unread at 50 with overflow=true", async () => {
+  const t = convexTest(schema, modules);
+  const { channelId } = await seedAcmeWithGeneral(t);
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  await asJane.mutation(api.reads.markRead, { channelId });
+  await new Promise((r) => setTimeout(r, 5));
+  await t.run(async (ctx) => {
+    const otherId = await ctx.db.insert("users", {
+      clerkUserId: "other",
+      tokenIdentifier: `${ISSUER}|other`,
+      email: "other@e.com",
+      name: "Other",
+    });
+    const orgId = (await ctx.db.get(channelId))!.organizationId;
+    await ctx.db.insert("channelMembers", { channelId, userId: otherId, organizationId: orgId });
+    for (let i = 0; i < 55; i++) {
+      await ctx.db.insert("messages", { channelId, userId: otherId, text: `m${i}` });
+    }
+  });
+  const list = await asJane.query(api.channels.listMine, { workspaceSlug: "acme" });
+  const general = list.find((c: { slug: string }) => c.slug === "general")!;
+  expect(general.unreadCount).toBe(50);
+  expect(general.overflow).toBe(true);
+});
+
+test("channels.listMine with no readState row counts every non-own, non-deleted message", async () => {
+  const t = convexTest(schema, modules);
+  const { channelId } = await seedAcmeWithGeneral(t);
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  await t.run(async (ctx) => {
+    const otherId = await ctx.db.insert("users", {
+      clerkUserId: "other",
+      tokenIdentifier: `${ISSUER}|other`,
+      email: "other@e.com",
+      name: "Other",
+    });
+    const orgId = (await ctx.db.get(channelId))!.organizationId;
+    await ctx.db.insert("channelMembers", { channelId, userId: otherId, organizationId: orgId });
+    await ctx.db.insert("messages", { channelId, userId: otherId, text: "hi" });
+    await ctx.db.insert("messages", { channelId, userId: otherId, text: "hello" });
+  });
+  const list = await asJane.query(api.channels.listMine, { workspaceSlug: "acme" });
+  const general = list.find((c: { slug: string }) => c.slug === "general")!;
+  expect(general.unreadCount).toBe(2);
+});
+
+test("channels.deleteChannel cascades reactions, typingIndicators, channelReadStates", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, channelId, orgId } = await seedAcmeWithGeneral(t);
+  // Seed a non-protected channel we can delete.
+  const delChannelId = await t.run(async (ctx) => {
+    const id = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "doomed",
+      name: "Doomed",
+      createdBy: userId,
+      isProtected: false,
+    });
+    await ctx.db.insert("channelMembers", { channelId: id, userId, organizationId: orgId });
+    const msg = await ctx.db.insert("messages", { channelId: id, userId, text: "x" });
+    await ctx.db.insert("reactions", {
+      messageId: msg,
+      userId,
+      emoji: "👍",
+      channelId: id,
+    });
+    await ctx.db.insert("typingIndicators", {
+      channelId: id,
+      userId,
+      organizationId: orgId,
+      expiresAt: Date.now() + 5000,
+    });
+    await ctx.db.insert("channelReadStates", {
+      channelId: id,
+      userId,
+      organizationId: orgId,
+      lastReadAt: Date.now(),
+    });
+    return id;
+  });
+  // Silence unused warning from the seeded channelId.
+  expect(channelId).toBeTruthy();
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  await asJane.mutation(api.channels.deleteChannel, { channelId: delChannelId });
+
+  // Let scheduled self-reschedule settle.
+  await t.finishInProgressScheduledFunctions();
+
+  const counts = await t.run(async (ctx) => ({
+    reactions: (await ctx.db.query("reactions").withIndex("by_channel", (q) => q.eq("channelId", delChannelId)).collect()).length,
+    typing: (await ctx.db.query("typingIndicators").withIndex("by_channel", (q) => q.eq("channelId", delChannelId)).collect()).length,
+    reads: (await ctx.db.query("channelReadStates").withIndex("by_channel", (q) => q.eq("channelId", delChannelId)).collect()).length,
+    channels: (await ctx.db.query("channels").collect()).filter((c) => c._id === delChannelId).length,
+  }));
+  expect(counts).toEqual({ reactions: 0, typing: 0, reads: 0, channels: 0 });
+});

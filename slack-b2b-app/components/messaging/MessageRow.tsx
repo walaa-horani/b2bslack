@@ -3,6 +3,14 @@
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
+import { ReactionBar } from "@/components/messaging/ReactionBar";
+
+type ReactionGroup = {
+  emoji: string;
+  count: number;
+  userIds: Id<"users">[];
+  userNames: string[];
+};
 
 function formatTime(creationTime: number): string {
   const d = new Date(creationTime);
@@ -15,10 +23,14 @@ export function MessageRow({
   message,
   author,
   isOwn,
+  reactions,
+  currentUserId,
 }: {
   message: Doc<"messages">;
   author: { _id: Id<"users">; name: string | null; imageUrl: string | null };
   isOwn: boolean;
+  reactions?: ReactionGroup[];
+  currentUserId: Id<"users"> | null;
 }) {
   const deleteMessage = useMutation(api.messages.deleteMessage);
   const tombstoned = !!message.deletedAt;
@@ -33,22 +45,23 @@ export function MessageRow({
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-2">
-          <span className="font-semibold text-sm">
-            {author.name ?? "Deleted user"}
-          </span>
-          <span className="text-xs text-zinc-500">
-            {formatTime(message._creationTime)}
-          </span>
+          <span className="font-semibold text-sm">{author.name ?? "Deleted user"}</span>
+          <span className="text-xs text-zinc-500">{formatTime(message._creationTime)}</span>
         </div>
         <div className="text-sm whitespace-pre-wrap break-words">
           {tombstoned ? (
-            <span className="italic text-zinc-400">
-              This message was deleted
-            </span>
+            <span className="italic text-zinc-400">This message was deleted</span>
           ) : (
             message.text
           )}
         </div>
+        {!tombstoned && (
+          <ReactionBar
+            messageId={message._id}
+            reactions={reactions ?? []}
+            currentUserId={currentUserId}
+          />
+        )}
       </div>
       {isOwn && !tombstoned && (
         <button

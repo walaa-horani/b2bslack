@@ -449,6 +449,108 @@ test("deleteMembership cascades channelMembers within the workspace only", async
   expect(cmembers[0].organizationId).toBe(orgBId); // Beta membership still here
 });
 
+test("deleteMembership cascades reactions, typingIndicators, channelReadStates within the workspace only", async () => {
+  const t = convexTest(schema, modules);
+  const seeded = await t.run(async (ctx) => {
+    const userId = await ctx.db.insert("users", {
+      clerkUserId: "user_leave",
+      tokenIdentifier: `${ISSUER}|user_leave`,
+      email: "l@e.com",
+      name: "L",
+    });
+    const orgA = await ctx.db.insert("organizations", {
+      clerkOrgId: "org_A",
+      slug: "acme",
+      name: "A",
+    });
+    const orgB = await ctx.db.insert("organizations", {
+      clerkOrgId: "org_B",
+      slug: "bee",
+      name: "B",
+    });
+    await ctx.db.insert("memberships", {
+      userId,
+      organizationId: orgA,
+      clerkMembershipId: "mem_a",
+      role: "org:member",
+    });
+    await ctx.db.insert("memberships", {
+      userId,
+      organizationId: orgB,
+      clerkMembershipId: "mem_b",
+      role: "org:member",
+    });
+    const chA = await ctx.db.insert("channels", {
+      organizationId: orgA,
+      slug: "general",
+      name: "General",
+      createdBy: userId,
+      isProtected: true,
+    });
+    const chB = await ctx.db.insert("channels", {
+      organizationId: orgB,
+      slug: "general",
+      name: "General",
+      createdBy: userId,
+      isProtected: true,
+    });
+    await ctx.db.insert("channelMembers", { channelId: chA, userId, organizationId: orgA });
+    await ctx.db.insert("channelMembers", { channelId: chB, userId, organizationId: orgB });
+    const msgA = await ctx.db.insert("messages", { channelId: chA, userId, text: "hi" });
+    const msgB = await ctx.db.insert("messages", { channelId: chB, userId, text: "hi" });
+    await ctx.db.insert("reactions", { messageId: msgA, userId, emoji: "👍", channelId: chA });
+    await ctx.db.insert("reactions", { messageId: msgB, userId, emoji: "👍", channelId: chB });
+    await ctx.db.insert("typingIndicators", {
+      channelId: chA, userId, organizationId: orgA, expiresAt: Date.now() + 5000,
+    });
+    await ctx.db.insert("typingIndicators", {
+      channelId: chB, userId, organizationId: orgB, expiresAt: Date.now() + 5000,
+    });
+    await ctx.db.insert("channelReadStates", {
+      channelId: chA, userId, organizationId: orgA, lastReadAt: Date.now(),
+    });
+    await ctx.db.insert("channelReadStates", {
+      channelId: chB, userId, organizationId: orgB, lastReadAt: Date.now(),
+    });
+    return { userId, orgA, orgB };
+  });
+
+  await t.mutation(internal.clerkSync.deleteMembership, { clerkMembershipId: "mem_a" });
+  await t.finishInProgressScheduledFunctions();
+
+  const result = await t.run(async (ctx) => {
+    const reactionsInA = await ctx.db
+      .query("reactions")
+      .withIndex("by_user_and_channel", (q) => q.eq("userId", seeded.userId))
+      .collect();
+    const typingInA = await ctx.db
+      .query("typingIndicators")
+      .withIndex("by_user_and_organization", (q) => q.eq("userId", seeded.userId).eq("organizationId", seeded.orgA))
+      .collect();
+    const readsInA = await ctx.db
+      .query("channelReadStates")
+      .withIndex("by_user_and_organization", (q) => q.eq("userId", seeded.userId).eq("organizationId", seeded.orgA))
+      .collect();
+    const allReactions = await ctx.db.query("reactions").collect();
+    const allTyping = await ctx.db.query("typingIndicators").collect();
+    const allReads = await ctx.db.query("channelReadStates").collect();
+    return {
+      typingInA: typingInA.length,
+      readsInA: readsInA.length,
+      reactionsRemaining: allReactions.length,
+      typingRemaining: allTyping.length,
+      readsRemaining: allReads.length,
+      reactionsInA: reactionsInA.length,
+    };
+  });
+  expect(result.typingInA).toBe(0);
+  expect(result.readsInA).toBe(0);
+  // orgB still has one of each.
+  expect(result.typingRemaining).toBe(1);
+  expect(result.readsRemaining).toBe(1);
+  expect(result.reactionsRemaining).toBe(1);
+});
+
 test("deleteOrganization cascades channels, messages, and channelMembers", async () => {
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {

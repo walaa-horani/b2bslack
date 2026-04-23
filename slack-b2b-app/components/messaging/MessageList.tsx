@@ -7,6 +7,7 @@ import { usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { MessageRow } from "@/components/messaging/MessageRow";
+import { useMarkChannelRead } from "@/hooks/useMarkChannelRead";
 
 const PAGE_SIZE = 30;
 const NEAR_TOP_PX = 200;
@@ -27,6 +28,15 @@ export function MessageList({ channelId }: { channelId: Id<"channels"> }) {
 
   // Reverse for display: newest at bottom.
   const displayed = results.slice().reverse();
+
+  const newestCreationTime = displayed.length > 0
+    ? displayed[displayed.length - 1].message._creationTime
+    : undefined;
+  useMarkChannelRead(channelId, atBottom, newestCreationTime);
+
+  const messageIds = displayed.map((r) => r.message._id).slice(-300);
+  const reactionsByMessage =
+    useQuery(api.reactions.listForMessages, { messageIds }) ?? {};
 
   const firstLoadDone = useRef(false);
   useLayoutEffect(() => {
@@ -109,6 +119,8 @@ export function MessageList({ channelId }: { channelId: Id<"channels"> }) {
               message={row.message}
               author={row.author}
               isOwn={!!me && row.author._id === me._id}
+              reactions={reactionsByMessage[row.message._id]}
+              currentUserId={me?._id ?? null}
             />
           ))}
         </>

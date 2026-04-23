@@ -51,17 +51,27 @@ export function WorkspaceSidebar({ slug }: { slug: string }) {
             {channels.map((ch) => {
               const href = `/${slug}/channels/${ch.slug}`;
               const isActive = pathname === href;
+              const unread = (ch as { unreadCount?: number }).unreadCount ?? 0;
+              const overflow = (ch as { overflow?: boolean }).overflow ?? false;
+              const isUnread = unread > 0;
               return (
                 <li key={ch._id}>
                   <Link
                     href={href}
-                    className={`block px-2 py-1 rounded text-sm truncate ${
+                    className={`flex items-center justify-between gap-2 px-2 py-1 rounded text-sm truncate ${
                       isActive
                         ? "bg-zinc-200 dark:bg-zinc-800 font-medium"
                         : "hover:bg-zinc-200 dark:hover:bg-zinc-800"
-                    }`}
+                    } ${isUnread && !isActive ? "font-semibold" : ""}`}
                   >
-                    {ch.isPrivate ? "🔒" : "#"} {ch.slug}
+                    <span className="truncate">
+                      {ch.isPrivate ? "🔒" : "#"} {ch.slug}
+                    </span>
+                    {isUnread && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-300 dark:bg-zinc-700 text-zinc-800 dark:text-zinc-100">
+                        {overflow ? "50+" : unread}
+                      </span>
+                    )}
                   </Link>
                 </li>
               );

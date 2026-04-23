@@ -299,6 +299,51 @@ export const deleteMembership = internalMutation({
       .unique();
     if (!membership) return;
 
+    // Cascade typing indicators for this user in this workspace.
+    for (;;) {
+      const batch = await ctx.db
+        .query("typingIndicators")
+        .withIndex("by_user_and_organization", (q) =>
+          q.eq("userId", membership.userId).eq("organizationId", membership.organizationId),
+        )
+        .take(256);
+      for (const r of batch) await ctx.db.delete(r._id);
+      if (batch.length < 256) break;
+    }
+
+    // Cascade read states for this user in this workspace.
+    for (;;) {
+      const batch = await ctx.db
+        .query("channelReadStates")
+        .withIndex("by_user_and_organization", (q) =>
+          q.eq("userId", membership.userId).eq("organizationId", membership.organizationId),
+        )
+        .take(256);
+      for (const r of batch) await ctx.db.delete(r._id);
+      if (batch.length < 256) break;
+    }
+
+    // Cascade reactions: iterate the user's channelMembers rows in this workspace
+    // to get channelIds, then delete reactions by (user, channel).
+    const userChannelMemberships = await ctx.db
+      .query("channelMembers")
+      .withIndex("by_user_and_organization", (q) =>
+        q.eq("userId", membership.userId).eq("organizationId", membership.organizationId),
+      )
+      .collect();
+    for (const cm of userChannelMemberships) {
+      for (;;) {
+        const batch = await ctx.db
+          .query("reactions")
+          .withIndex("by_user_and_channel", (q) =>
+            q.eq("userId", membership.userId).eq("channelId", cm.channelId),
+          )
+          .take(256);
+        for (const r of batch) await ctx.db.delete(r._id);
+        if (batch.length < 256) break;
+      }
+    }
+
     // Remove this user from every channel in this workspace.
     const channelMemberships = await ctx.db
       .query("channelMembers")
