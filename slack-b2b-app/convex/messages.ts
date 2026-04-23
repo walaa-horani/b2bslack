@@ -71,3 +71,16 @@ export const list = query({
     };
   },
 });
+
+export const deleteMessage = mutation({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, args) => {
+    const user = await ensureUser(ctx);
+    const message = await ctx.db.get(args.messageId);
+    if (!message) throw new Error(`Message not found: ${args.messageId}`);
+    if (message.userId !== user._id) {
+      throw new Error("Not authorized: only the author can delete a message.");
+    }
+    await ctx.db.patch(message._id, { deletedAt: Date.now() });
+  },
+});

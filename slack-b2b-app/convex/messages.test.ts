@@ -217,3 +217,74 @@ test("messages.list throws for non-channel-member", async () => {
     }),
   ).rejects.toThrow(/Not a channel member/);
 });
+
+// ---------- deleteMessage ----------
+
+test("messages.deleteMessage sets deletedAt on own message", async () => {
+  const t = convexTest(schema, modules);
+  const { channelId } = await seedAcmeWithGeneral(t);
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const messageId = await asJane.mutation(api.messages.send, {
+    channelId,
+    text: "oops",
+  });
+
+  const before = Date.now();
+  await asJane.mutation(api.messages.deleteMessage, { messageId });
+  const after = Date.now();
+
+  const row = await t.run(async (ctx) => await ctx.db.get(messageId));
+  expect(row?.deletedAt).toBeGreaterThanOrEqual(before);
+  expect(row?.deletedAt).toBeLessThanOrEqual(after);
+  expect(row?.text).toBe("oops"); // text retained
+});
+
+test("messages.deleteMessage throws for non-author (even admin)", async () => {
+  const t = convexTest(schema, modules);
+  const { userId: janeId, orgId, channelId } = await seedAcmeWithGeneral(t);
+
+  // Jane posts.
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const messageId = await asJane.mutation(api.messages.send, {
+    channelId,
+    text: "from jane",
+  });
+
+  // Bob is another admin in the workspace + channel.
+  const { bobId } = await t.run(async (ctx) => {
+    const bobId = await ctx.db.insert("users", {
+      clerkUserId: "user_bob",
+      tokenIdentifier: `${ISSUER}|user_bob`,
+      email: "bob@example.com",
+    });
+    await ctx.db.insert("memberships", {
+      userId: bobId,
+      organizationId: orgId,
+      clerkMembershipId: "orgmem_bob",
+      role: "org:admin",
+    });
+    await ctx.db.insert("channelMembers", {
+      channelId,
+      userId: bobId,
+      organizationId: orgId,
+    });
+    return { bobId };
+  });
+  const asBob = t.withIdentity({
+    tokenIdentifier: `${ISSUER}|user_bob`,
+    subject: "user_bob",
+    email: "bob@example.com",
+  });
+
+  await expect(
+    asBob.mutation(api.messages.deleteMessage, { messageId }),
+  ).rejects.toThrow(/author|not authorized/i);
+});
