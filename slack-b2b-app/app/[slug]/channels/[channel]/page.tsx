@@ -9,6 +9,7 @@ import { ChannelErrorBoundary } from "@/components/messaging/ChannelErrorBoundar
 import { MessageList } from "@/components/messaging/MessageList";
 import { MessageComposer } from "@/components/messaging/MessageComposer";
 import { InviteToChannelModal } from "@/components/messaging/InviteToChannelModal";
+import { TypingBar } from "@/components/messaging/TypingBar";
 
 export default function ChannelPage({
   params,
@@ -84,6 +85,7 @@ function ChannelContent({
         onAddPeople={isPrivate ? () => setInviteOpen(true) : undefined}
       />
       <MessageList channelId={data.channel._id} />
+      <TypingBar channelId={data.channel._id} />
       <MessageComposer channelId={data.channel._id} />
       <InviteToChannelModal
         open={inviteOpen}
