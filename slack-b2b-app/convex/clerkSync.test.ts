@@ -286,3 +286,95 @@ test("deleteMembership removes the row", async () => {
     await t.run(async (ctx) => await ctx.db.query("memberships").collect()),
   ).toHaveLength(0);
 });
+
+// ---------- channel auto-provisioning via upsertMembership ----------
+
+test("upsertMembership auto-creates #general on first membership of a workspace", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("users", {
+      clerkUserId: "user_abc",
+      tokenIdentifier: `${ISSUER}|user_abc`,
+      email: "jane@example.com",
+    });
+    await ctx.db.insert("organizations", {
+      clerkOrgId: "org_1",
+      slug: "acme",
+      name: "Acme",
+    });
+  });
+
+  await t.mutation(internal.clerkSync.upsertMembership, {
+    data: {
+      id: "orgmem_1",
+      organization: { id: "org_1" },
+      public_user_data: { user_id: "user_abc" },
+      role: "org:admin",
+    },
+    attempts: 0,
+  });
+
+  const channels = await t.run(
+    async (ctx) => await ctx.db.query("channels").collect(),
+  );
+  expect(channels).toHaveLength(1);
+  expect(channels[0].slug).toBe("general");
+  expect(channels[0].name).toBe("General");
+  expect(channels[0].isProtected).toBe(true);
+
+  const cmembers = await t.run(
+    async (ctx) => await ctx.db.query("channelMembers").collect(),
+  );
+  expect(cmembers).toHaveLength(1);
+  expect(cmembers[0].channelId).toBe(channels[0]._id);
+});
+
+test("upsertMembership on a second member does NOT duplicate #general", async () => {
+  const t = convexTest(schema, modules);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("users", {
+      clerkUserId: "user_a",
+      tokenIdentifier: `${ISSUER}|user_a`,
+      email: "a@example.com",
+    });
+    await ctx.db.insert("users", {
+      clerkUserId: "user_b",
+      tokenIdentifier: `${ISSUER}|user_b`,
+      email: "b@example.com",
+    });
+    await ctx.db.insert("organizations", {
+      clerkOrgId: "org_1",
+      slug: "acme",
+      name: "Acme",
+    });
+  });
+  const baseArgs = {
+    data: {
+      id: "orgmem_1",
+      organization: { id: "org_1" },
+      public_user_data: { user_id: "user_a" },
+      role: "org:admin",
+    },
+    attempts: 0,
+  };
+  await t.mutation(internal.clerkSync.upsertMembership, baseArgs);
+  await t.mutation(internal.clerkSync.upsertMembership, {
+    ...baseArgs,
+    data: {
+      ...baseArgs.data,
+      id: "orgmem_2",
+      public_user_data: { user_id: "user_b" },
+      role: "org:member",
+    },
+  });
+
+  const channels = await t.run(
+    async (ctx) => await ctx.db.query("channels").collect(),
+  );
+  expect(channels).toHaveLength(1);
+
+  const cmembers = await t.run(
+    async (ctx) => await ctx.db.query("channelMembers").collect(),
+  );
+  expect(cmembers).toHaveLength(2); // one per user
+});

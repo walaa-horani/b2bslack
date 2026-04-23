@@ -151,7 +151,6 @@ export const upsertMembership = internalMutation({
       .withIndex("by_clerk_org_id", (q) => q.eq("clerkOrgId", m.organization.id))
       .unique();
 
-    // Out-of-order webhook: parent rows not yet present. Re-schedule up to 5 times.
     if (!user || !org) {
       if (attempts >= MAX_MEMBERSHIP_RETRIES) {
         console.error(
@@ -167,23 +166,63 @@ export const upsertMembership = internalMutation({
       return;
     }
 
+    // 1. Workspace membership row (existing behavior).
     const existing = await ctx.db
       .query("memberships")
       .withIndex("by_clerk_membership_id", (q) =>
         q.eq("clerkMembershipId", m.id),
       )
       .unique();
-
     if (existing) {
       await ctx.db.patch(existing._id, { role: m.role });
-      return existing._id;
+    } else {
+      await ctx.db.insert("memberships", {
+        userId: user._id,
+        organizationId: org._id,
+        clerkMembershipId: m.id,
+        role: m.role,
+      });
     }
-    return await ctx.db.insert("memberships", {
-      userId: user._id,
-      organizationId: org._id,
-      clerkMembershipId: m.id,
-      role: m.role,
-    });
+
+    // 2. Ensure #general exists (idempotent).
+    let general = await ctx.db
+      .query("channels")
+      .withIndex("by_organization_and_slug", (q) =>
+        q.eq("organizationId", org._id).eq("slug", "general"),
+      )
+      .unique();
+    if (!general) {
+      const generalId = await ctx.db.insert("channels", {
+        organizationId: org._id,
+        slug: "general",
+        name: "General",
+        createdBy: user._id,
+        isProtected: true,
+      });
+      general = await ctx.db.get(generalId);
+    }
+
+    // 3. Add this user to every protected channel in the workspace.
+    const protectedChannels = await ctx.db
+      .query("channels")
+      .withIndex("by_organization", (q) => q.eq("organizationId", org._id))
+      .collect();
+    for (const ch of protectedChannels) {
+      if (!ch.isProtected) continue;
+      const already = await ctx.db
+        .query("channelMembers")
+        .withIndex("by_user_and_channel", (q) =>
+          q.eq("userId", user._id).eq("channelId", ch._id),
+        )
+        .unique();
+      if (!already) {
+        await ctx.db.insert("channelMembers", {
+          userId: user._id,
+          channelId: ch._id,
+          organizationId: org._id,
+        });
+      }
+    }
   },
 });
 
