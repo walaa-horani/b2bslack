@@ -17,6 +17,7 @@ export default defineSchema({
     slug: v.string(),
     name: v.string(),
     imageUrl: v.optional(v.string()),
+    planKey: v.optional(v.string()),
   })
     .index("by_clerk_org_id", ["clerkOrgId"])
     .index("by_slug", ["slug"]),
@@ -38,6 +39,7 @@ export default defineSchema({
     name: v.string(),
     createdBy: v.id("users"),
     isProtected: v.boolean(),
+    isPrivate: v.optional(v.boolean()),
   })
     .index("by_organization", ["organizationId"])
     .index("by_organization_and_slug", ["organizationId", "slug"]),

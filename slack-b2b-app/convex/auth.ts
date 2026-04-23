@@ -1,5 +1,6 @@
 import { QueryCtx, MutationCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
+import { featuresForPlan, hasFeature } from "./billing";
 
 /**
  * Insert-if-missing. Call at the top of any mutation that needs an authenticated user.
@@ -92,4 +93,40 @@ export async function assertChannelMember(
   if (!member) throw new Error(`Not a channel member: ${channel.slug}`);
 
   return { channel, member };
+}
+
+/**
+ * Thrown by `assertFeature` when the active org lacks a feature.
+ * Clients can catch by checking `err.name === "PaywallError"` and read
+ * `featureKey` to show a targeted upgrade prompt.
+ */
+export class PaywallError extends Error {
+  constructor(public featureKey: string) {
+    super(`Feature requires upgrade: ${featureKey}`);
+    this.name = "PaywallError";
+  }
+}
+
+/**
+ * Throws PaywallError(featureKey) when the org's plan doesn't grant the
+ * feature. Reads `org.planKey` (mirrored from Clerk via webhook); orgs with
+ * no planKey are treated as Free.
+ */
+export function assertFeature(
+  org: Pick<Doc<"organizations">, "planKey">,
+  featureKey: string,
+): void {
+  if (!hasFeature(org, featureKey)) {
+    throw new PaywallError(featureKey);
+  }
+}
+
+/**
+ * Returns the feature keys granted by the org's plan. Convenience wrapper
+ * around `featuresForPlan(org.planKey)` for callers that already have the row.
+ */
+export function getFeatures(
+  org: Pick<Doc<"organizations">, "planKey">,
+): string[] {
+  return featuresForPlan(org.planKey);
 }

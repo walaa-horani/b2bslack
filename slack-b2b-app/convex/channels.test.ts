@@ -8,7 +8,10 @@ const modules = import.meta.glob("./**/*.ts");
 const ISSUER = "https://awaited-boxer-54.clerk.accounts.dev";
 const TOKEN = `${ISSUER}|user_abc`;
 
-async function seedAcme(t: ReturnType<typeof convexTest>) {
+async function seedAcme(
+  t: ReturnType<typeof convexTest>,
+  opts: { planKey?: string } = {},
+) {
   return await t.run(async (ctx) => {
     const userId = await ctx.db.insert("users", {
       clerkUserId: "user_abc",
@@ -20,6 +23,7 @@ async function seedAcme(t: ReturnType<typeof convexTest>) {
       clerkOrgId: "org_1",
       slug: "acme",
       name: "Acme",
+      planKey: opts.planKey,
     });
     await ctx.db.insert("memberships", {
       userId,
@@ -492,4 +496,319 @@ test("channels.listBrowsable returns channels the caller is NOT in", async () =>
   });
   expect(browsable).toHaveLength(1);
   expect(browsable[0].slug).toBe("random");
+});
+
+// ---------- isPrivate gate (R7) ----------
+
+test("channels.create({isPrivate: true}) on Free org throws PaywallError", async () => {
+  const t = convexTest(schema, modules);
+  await seedAcme(t, { planKey: "free_org" });
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+
+  await expect(
+    asJane.mutation(api.channels.create, {
+      workspaceSlug: "acme",
+      name: "Private Ops",
+      slug: "private-ops",
+      isPrivate: true,
+    }),
+  ).rejects.toThrow(/private_channels|upgrade/i);
+
+  expect(
+    await t.run(async (ctx) => await ctx.db.query("channels").collect()),
+  ).toHaveLength(0);
+});
+
+test("channels.create({isPrivate: true}) on Pro org succeeds", async () => {
+  const t = convexTest(schema, modules);
+  await seedAcme(t, { planKey: "pro" });
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+
+  const id = await asJane.mutation(api.channels.create, {
+    workspaceSlug: "acme",
+    name: "Private Ops",
+    slug: "private-ops",
+    isPrivate: true,
+  });
+
+  const ch = await t.run(async (ctx) => await ctx.db.get(id));
+  expect(ch?.isPrivate).toBe(true);
+});
+
+test("channels.create without isPrivate defaults to public on Free", async () => {
+  const t = convexTest(schema, modules);
+  await seedAcme(t, { planKey: "free_org" });
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+
+  const id = await asJane.mutation(api.channels.create, {
+    workspaceSlug: "acme",
+    name: "Project Alpha",
+    slug: "project-alpha",
+  });
+
+  const ch = await t.run(async (ctx) => await ctx.db.get(id));
+  expect(ch?.isPrivate).toBe(false);
+});
+
+// ---------- invite + listChannelMembers (R8) ----------
+
+test("channels.invite adds a channelMembers row on a private channel (Pro)", async () => {
+  const t = convexTest(schema, modules);
+  const { orgId } = await seedAcme(t, { planKey: "pro" });
+
+  const { bobId } = await t.run(async (ctx) => {
+    const bobId = await ctx.db.insert("users", {
+      clerkUserId: "user_bob",
+      tokenIdentifier: `${ISSUER}|user_bob`,
+      email: "bob@example.com",
+    });
+    await ctx.db.insert("memberships", {
+      userId: bobId,
+      organizationId: orgId,
+      clerkMembershipId: "orgmem_bob",
+      role: "org:member",
+    });
+    return { bobId };
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const channelId = await asJane.mutation(api.channels.create, {
+    workspaceSlug: "acme",
+    name: "Ops",
+    slug: "ops",
+    isPrivate: true,
+  });
+
+  await asJane.mutation(api.channels.invite, { channelId, userId: bobId });
+  await asJane.mutation(api.channels.invite, { channelId, userId: bobId }); // idempotent
+
+  const bobMemberships = await t.run(
+    async (ctx) =>
+      await ctx.db
+        .query("channelMembers")
+        .withIndex("by_user_and_channel", (q) =>
+          q.eq("userId", bobId).eq("channelId", channelId),
+        )
+        .collect(),
+  );
+  expect(bobMemberships).toHaveLength(1);
+});
+
+test("channels.invite on a private channel by a Free caller throws PaywallError", async () => {
+  const t = convexTest(schema, modules);
+  const { userId: janeId, orgId } = await seedAcme(t, { planKey: "free_org" });
+
+  const { channelId, bobId } = await t.run(async (ctx) => {
+    const channelId = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "ops",
+      name: "Ops",
+      createdBy: janeId,
+      isProtected: false,
+      isPrivate: true,
+    });
+    await ctx.db.insert("channelMembers", {
+      channelId,
+      userId: janeId,
+      organizationId: orgId,
+    });
+    const bobId = await ctx.db.insert("users", {
+      clerkUserId: "user_bob",
+      tokenIdentifier: `${ISSUER}|user_bob`,
+      email: "bob@example.com",
+    });
+    await ctx.db.insert("memberships", {
+      userId: bobId,
+      organizationId: orgId,
+      clerkMembershipId: "orgmem_bob",
+      role: "org:member",
+    });
+    return { channelId, bobId };
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  await expect(
+    asJane.mutation(api.channels.invite, { channelId, userId: bobId }),
+  ).rejects.toThrow(/private_channels|upgrade/i);
+});
+
+test("channels.invite rejects non-channel-member callers", async () => {
+  const t = convexTest(schema, modules);
+  const { orgId } = await seedAcme(t, { planKey: "pro" });
+  const { bobId } = await t.run(async (ctx) => {
+    const bobId = await ctx.db.insert("users", {
+      clerkUserId: "user_bob",
+      tokenIdentifier: `${ISSUER}|user_bob`,
+      email: "bob@example.com",
+    });
+    await ctx.db.insert("memberships", {
+      userId: bobId,
+      organizationId: orgId,
+      clerkMembershipId: "orgmem_bob",
+      role: "org:member",
+    });
+    return { bobId };
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const channelId = await asJane.mutation(api.channels.create, {
+    workspaceSlug: "acme",
+    name: "Ops",
+    slug: "ops",
+    isPrivate: true,
+  });
+
+  const asBob = t.withIdentity({
+    tokenIdentifier: `${ISSUER}|user_bob`,
+    subject: "user_bob",
+    email: "bob@example.com",
+  });
+  await expect(
+    asBob.mutation(api.channels.invite, { channelId, userId: bobId }),
+  ).rejects.toThrow(/Not a channel member/);
+});
+
+test("channels.invite rejects non-workspace-member invitee", async () => {
+  const t = convexTest(schema, modules);
+  await seedAcme(t, { planKey: "pro" });
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const channelId = await asJane.mutation(api.channels.create, {
+    workspaceSlug: "acme",
+    name: "Ops",
+    slug: "ops",
+    isPrivate: true,
+  });
+
+  const strangerId = await t.run(async (ctx) =>
+    await ctx.db.insert("users", {
+      clerkUserId: "user_stranger",
+      tokenIdentifier: `${ISSUER}|user_stranger`,
+      email: "stranger@example.com",
+    }),
+  );
+
+  await expect(
+    asJane.mutation(api.channels.invite, { channelId, userId: strangerId }),
+  ).rejects.toThrow(/Not a member/);
+});
+
+test("channels.listChannelMembers returns the set of userIds in the channel", async () => {
+  const t = convexTest(schema, modules);
+  const { userId: janeId, orgId } = await seedAcme(t, { planKey: "pro" });
+  const channelId = await t.run(async (ctx) => {
+    const id = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "ops",
+      name: "Ops",
+      createdBy: janeId,
+      isProtected: false,
+      isPrivate: true,
+    });
+    await ctx.db.insert("channelMembers", {
+      channelId: id,
+      userId: janeId,
+      organizationId: orgId,
+    });
+    return id;
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const result = await asJane.query(api.channels.listChannelMembers, {
+    channelId,
+  });
+  expect(result).toHaveLength(1);
+  expect(result[0]).toBe(janeId);
+});
+
+// ---------- listBrowsable filter (R9) ----------
+
+test("channels.listBrowsable excludes private channels", async () => {
+  const t = convexTest(schema, modules);
+  const { userId: janeId, orgId } = await seedAcme(t, { planKey: "pro" });
+
+  const { bobId } = await t.run(async (ctx) => {
+    const bobId = await ctx.db.insert("users", {
+      clerkUserId: "user_bob",
+      tokenIdentifier: `${ISSUER}|user_bob`,
+      email: "bob@example.com",
+    });
+    await ctx.db.insert("memberships", {
+      userId: bobId,
+      organizationId: orgId,
+      clerkMembershipId: "orgmem_bob",
+      role: "org:member",
+    });
+    const publicId = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "random",
+      name: "Random",
+      createdBy: janeId,
+      isProtected: false,
+      isPrivate: false,
+    });
+    const privateId = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "ops",
+      name: "Ops",
+      createdBy: janeId,
+      isProtected: false,
+      isPrivate: true,
+    });
+    await ctx.db.insert("channelMembers", {
+      channelId: publicId,
+      userId: janeId,
+      organizationId: orgId,
+    });
+    await ctx.db.insert("channelMembers", {
+      channelId: privateId,
+      userId: janeId,
+      organizationId: orgId,
+    });
+    return { bobId };
+  });
+
+  const asBob = t.withIdentity({
+    tokenIdentifier: `${ISSUER}|user_bob`,
+    subject: "user_bob",
+    email: "bob@example.com",
+  });
+
+  const browsable = await asBob.query(api.channels.listBrowsable, {
+    workspaceSlug: "acme",
+  });
+  expect(browsable).toHaveLength(1);
+  expect(browsable[0].slug).toBe("random");
+  expect(browsable.find((c) => c.slug === "ops")).toBeUndefined();
 });

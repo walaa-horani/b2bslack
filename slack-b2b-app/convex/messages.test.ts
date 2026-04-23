@@ -8,7 +8,10 @@ const modules = import.meta.glob("./**/*.ts");
 const ISSUER = "https://awaited-boxer-54.clerk.accounts.dev";
 const TOKEN = `${ISSUER}|user_abc`;
 
-async function seedAcmeWithGeneral(t: ReturnType<typeof convexTest>) {
+async function seedAcmeWithGeneral(
+  t: ReturnType<typeof convexTest>,
+  opts: { planKey?: string } = {},
+) {
   return await t.run(async (ctx) => {
     const userId = await ctx.db.insert("users", {
       clerkUserId: "user_abc",
@@ -20,6 +23,7 @@ async function seedAcmeWithGeneral(t: ReturnType<typeof convexTest>) {
       clerkOrgId: "org_1",
       slug: "acme",
       name: "Acme",
+      planKey: opts.planKey,
     });
     await ctx.db.insert("memberships", {
       userId,
@@ -288,3 +292,160 @@ test("messages.deleteMessage throws for non-author (even admin)", async () => {
     asBob.mutation(api.messages.deleteMessage, { messageId }),
   ).rejects.toThrow(/author|not authorized/i);
 });
+
+// ---------- history cap (R11) ----------
+
+// Use a smaller runtime cap for tests via a shared helper: insert N messages,
+// then paginate through the listing. Uses the real FREE_MESSAGE_HISTORY_CAP
+// (10_000) — convex-test handles this size in a few hundred ms per test.
+
+async function seedMessages(
+  t: ReturnType<typeof convexTest>,
+  userId: string,
+  channelId: string,
+  count: number,
+) {
+  await t.run(async (ctx) => {
+    for (let i = 0; i < count; i++) {
+      await ctx.db.insert("messages", {
+        channelId: channelId as any,
+        userId: userId as any,
+        text: `msg ${i}`,
+      });
+    }
+  });
+}
+
+test("messages.list on Free org with 9,500 messages returns all, cappedByPlan=false", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, channelId } = await seedAcmeWithGeneral(t, {
+    planKey: "free_org",
+  });
+  await seedMessages(t, userId, channelId, 9_500);
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  let cursor: string | null = null;
+  let total = 0;
+  let anyCapped = false;
+  for (let i = 0; i < 30; i++) {
+    const p: {
+      page: unknown[];
+      continueCursor: string;
+      isDone: boolean;
+      cappedByPlan: boolean;
+    } = await asJane.query(api.messages.list, {
+      channelId,
+      paginationOpts: { numItems: 500, cursor },
+    });
+    total += p.page.length;
+    anyCapped = anyCapped || p.cappedByPlan;
+    if (p.isDone) break;
+    cursor = p.continueCursor;
+  }
+  expect(total).toBe(9_500);
+  expect(anyCapped).toBe(false);
+}, 30_000);
+
+test("messages.list on Free org with 10,500 messages caps at 10,000, cappedByPlan=true", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, channelId } = await seedAcmeWithGeneral(t, {
+    planKey: "free_org",
+  });
+  await seedMessages(t, userId, channelId, 10_500);
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  let cursor: string | null = null;
+  let total = 0;
+  let sawCap = false;
+  for (let i = 0; i < 30; i++) {
+    const p: {
+      page: unknown[];
+      continueCursor: string;
+      isDone: boolean;
+      cappedByPlan: boolean;
+    } = await asJane.query(api.messages.list, {
+      channelId,
+      paginationOpts: { numItems: 500, cursor },
+    });
+    total += p.page.length;
+    sawCap = sawCap || p.cappedByPlan;
+    if (p.isDone) break;
+    cursor = p.continueCursor;
+  }
+  expect(total).toBe(10_000);
+  expect(sawCap).toBe(true);
+}, 30_000);
+
+test("messages.list on Pro org with 10,500 messages returns all, cappedByPlan=false", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, channelId } = await seedAcmeWithGeneral(t, {
+    planKey: "pro",
+  });
+  await seedMessages(t, userId, channelId, 10_500);
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  let cursor: string | null = null;
+  let total = 0;
+  let anyCapped = false;
+  for (let i = 0; i < 30; i++) {
+    const p: {
+      page: unknown[];
+      continueCursor: string;
+      isDone: boolean;
+      cappedByPlan: boolean;
+    } = await asJane.query(api.messages.list, {
+      channelId,
+      paginationOpts: { numItems: 500, cursor },
+    });
+    total += p.page.length;
+    anyCapped = anyCapped || p.cappedByPlan;
+    if (p.isDone) break;
+    cursor = p.continueCursor;
+  }
+  expect(total).toBe(10_500);
+  expect(anyCapped).toBe(false);
+}, 30_000);
+
+test("messages.historyStatus returns cappedByPlan=true on Free with 10,001 messages", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, channelId } = await seedAcmeWithGeneral(t, {
+    planKey: "free_org",
+  });
+  await seedMessages(t, userId, channelId, 10_001);
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const result = await asJane.query(api.messages.historyStatus, { channelId });
+  expect(result.cappedByPlan).toBe(true);
+}, 30_000);
+
+test("messages.historyStatus returns cappedByPlan=false on Pro regardless of size", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, channelId } = await seedAcmeWithGeneral(t, {
+    planKey: "pro",
+  });
+  await seedMessages(t, userId, channelId, 10_001);
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const result = await asJane.query(api.messages.historyStatus, { channelId });
+  expect(result.cappedByPlan).toBe(false);
+}, 30_000);

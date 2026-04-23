@@ -4,6 +4,7 @@ import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import { useHasFeature } from "@/hooks/useHasFeature";
 
 function slugify(s: string): string {
   return s
@@ -24,10 +25,12 @@ export function CreateChannelModal({
   onClose: () => void;
 }) {
   const [name, setName] = useState("");
+  const [isPrivate, setIsPrivate] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const create = useMutation(api.channels.create);
   const router = useRouter();
+  const canPrivate = useHasFeature(workspaceSlug, "private_channels");
 
   const slug = slugify(name);
 
@@ -42,9 +45,10 @@ export function CreateChannelModal({
     }
     setSubmitting(true);
     try {
-      await create({ workspaceSlug, name, slug });
+      await create({ workspaceSlug, name, slug, isPrivate });
       onClose();
       setName("");
+      setIsPrivate(false);
       router.push(`/${workspaceSlug}/channels/${slug}`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to create channel");
@@ -71,6 +75,39 @@ export function CreateChannelModal({
             maxLength={80}
             className="rounded border px-3 py-2 text-sm dark:bg-zinc-900"
           />
+        </label>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            disabled={!canPrivate}
+            checked={isPrivate && !!canPrivate}
+            onChange={(e) => setIsPrivate(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span className={canPrivate ? "" : "text-zinc-400"}>
+            Make private
+            {canPrivate === false && (
+              <span className="ml-2 text-xs rounded bg-purple-100 text-purple-700 px-1.5 py-0.5">
+                Pro
+              </span>
+            )}
+            <span className="block text-xs text-zinc-500 mt-0.5">
+              Only invited people can see and send messages.
+              {canPrivate === false && (
+                <>
+                  {" "}
+                  <a
+                    href={`/${workspaceSlug}/settings/billing`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline"
+                  >
+                    Upgrade to Pro
+                  </a>
+                </>
+              )}
+            </span>
+          </span>
         </label>
         {name && (
           <div className="text-xs text-zinc-500">

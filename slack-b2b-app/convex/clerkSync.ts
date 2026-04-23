@@ -106,6 +106,45 @@ export const upsertOrganization = internalMutation({
   },
 });
 
+/**
+ * Patch the org's `planKey`. Called from the Clerk billing webhook handler
+ * (subscriptionItem.active | .updated | .canceled). Pass `planKey: null` to
+ * clear (e.g. cancellation → revert to undefined → treated as Free).
+ *
+ * If the org hasn't been synced yet (organization.created webhook not seen
+ * or out-of-order delivery), retry a few times rather than dropping silently.
+ */
+export const setOrgPlan = internalMutation({
+  args: {
+    clerkOrgId: v.string(),
+    planKey: v.union(v.string(), v.null()),
+    attempts: v.number(),
+  },
+  handler: async (ctx, { clerkOrgId, planKey, attempts }) => {
+    const org = await ctx.db
+      .query("organizations")
+      .withIndex("by_clerk_org_id", (q) => q.eq("clerkOrgId", clerkOrgId))
+      .unique();
+
+    if (!org) {
+      if (attempts >= MAX_MEMBERSHIP_RETRIES) {
+        console.error(
+          `setOrgPlan giving up on ${clerkOrgId} after ${attempts} attempts`,
+        );
+        return;
+      }
+      await ctx.scheduler.runAfter(5000, internal.clerkSync.setOrgPlan, {
+        clerkOrgId,
+        planKey,
+        attempts: attempts + 1,
+      });
+      return;
+    }
+
+    await ctx.db.patch(org._id, { planKey: planKey ?? undefined });
+  },
+});
+
 export const deleteOrganization = internalMutation({
   args: { clerkOrgId: v.string() },
   handler: async (ctx, { clerkOrgId }) => {

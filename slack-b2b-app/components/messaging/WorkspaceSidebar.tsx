@@ -8,12 +8,14 @@ import { OrganizationSwitcher, UserButton } from "@clerk/nextjs";
 import { api } from "@/convex/_generated/api";
 import { CreateChannelModal } from "@/components/messaging/CreateChannelModal";
 import { BrowseChannelsModal } from "@/components/messaging/BrowseChannelsModal";
+import { useHasFeature } from "@/hooks/useHasFeature";
 
 export function WorkspaceSidebar({ slug }: { slug: string }) {
   const channels = useQuery(api.channels.listMine, { workspaceSlug: slug });
   const pathname = usePathname();
   const [createOpen, setCreateOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
+  const hasUnlimited = useHasFeature(slug, "unlimited_message_history");
 
   return (
     <aside className="flex flex-col w-64 flex-shrink-0 border-r bg-zinc-100 dark:bg-zinc-900">
@@ -59,7 +61,7 @@ export function WorkspaceSidebar({ slug }: { slug: string }) {
                         : "hover:bg-zinc-200 dark:hover:bg-zinc-800"
                     }`}
                   >
-                    # {ch.slug}
+                    {ch.isPrivate ? "🔒" : "#"} {ch.slug}
                   </Link>
                 </li>
               );
@@ -74,6 +76,15 @@ export function WorkspaceSidebar({ slug }: { slug: string }) {
           Browse channels…
         </button>
       </div>
+
+      {hasUnlimited === false && (
+        <Link
+          href={`/${slug}/settings/billing`}
+          className="mx-3 mb-2 text-xs text-center rounded border px-2 py-1 bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 dark:from-blue-950 dark:to-purple-950"
+        >
+          ⚡ Upgrade to Pro
+        </Link>
+      )}
 
       <div className="p-3 border-t flex items-center justify-between">
         <UserButton />

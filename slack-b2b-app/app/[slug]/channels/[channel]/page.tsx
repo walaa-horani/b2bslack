@@ -8,6 +8,7 @@ import { ChannelHeader } from "@/components/messaging/ChannelHeader";
 import { ChannelErrorBoundary } from "@/components/messaging/ChannelErrorBoundary";
 import { MessageList } from "@/components/messaging/MessageList";
 import { MessageComposer } from "@/components/messaging/MessageComposer";
+import { InviteToChannelModal } from "@/components/messaging/InviteToChannelModal";
 
 export default function ChannelPage({
   params,
@@ -50,6 +51,7 @@ function ChannelContent({
     channelSlug: channel,
   });
   const deleteChannel = useMutation(api.channels.deleteChannel);
+  const [inviteOpen, setInviteOpen] = useState(false);
 
   if (data === undefined) {
     return (
@@ -67,6 +69,8 @@ function ChannelContent({
     router.push(`/${slug}/channels/general`);
   };
 
+  const isPrivate = data.channel.isPrivate === true;
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <ChannelHeader
@@ -74,11 +78,19 @@ function ChannelContent({
         slug={data.channel.slug}
         memberCount={data.memberCount}
         isProtected={data.channel.isProtected}
+        isPrivate={isPrivate}
         isAdmin={isAdmin}
         onDelete={onDeleteChannel}
+        onAddPeople={isPrivate ? () => setInviteOpen(true) : undefined}
       />
       <MessageList channelId={data.channel._id} />
       <MessageComposer channelId={data.channel._id} />
+      <InviteToChannelModal
+        open={inviteOpen}
+        workspaceSlug={slug}
+        channelId={data.channel._id}
+        onClose={() => setInviteOpen(false)}
+      />
     </div>
   );
 }
