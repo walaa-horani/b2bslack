@@ -1,6 +1,6 @@
 import { v } from "convex/values";
-import { mutation } from "./_generated/server";
-import { assertMember, ensureUser } from "./auth";
+import { mutation, query } from "./_generated/server";
+import { assertChannelMember, assertMember, ensureUser, getAuthedUser } from "./auth";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,79}$/;
 
@@ -127,5 +127,83 @@ export const deleteChannel = mutation({
     for (const cm of cmembers) await ctx.db.delete(cm._id);
 
     await ctx.db.delete(channel._id);
+  },
+});
+
+export const listMine = query({
+  args: { workspaceSlug: v.string() },
+  handler: async (ctx, args) => {
+    const user = await getAuthedUser(ctx);
+    if (!user) return [];
+    const { org } = await assertMember(ctx, user._id, args.workspaceSlug);
+
+    const memberships = await ctx.db
+      .query("channelMembers")
+      .withIndex("by_user_and_organization", (q) =>
+        q.eq("userId", user._id).eq("organizationId", org._id),
+      )
+      .take(200);
+
+    const channels = await Promise.all(
+      memberships.map((m) => ctx.db.get(m.channelId)),
+    );
+    return channels
+      .filter((c): c is NonNullable<typeof c> => c !== null)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  },
+});
+
+export const getBySlug = query({
+  args: { workspaceSlug: v.string(), channelSlug: v.string() },
+  handler: async (ctx, args) => {
+    const user = await getAuthedUser(ctx);
+    if (!user) throw new Error("Not authenticated");
+    const { org } = await assertMember(ctx, user._id, args.workspaceSlug);
+
+    const channel = await ctx.db
+      .query("channels")
+      .withIndex("by_organization_and_slug", (q) =>
+        q.eq("organizationId", org._id).eq("slug", args.channelSlug),
+      )
+      .unique();
+    if (!channel) throw new Error(`Channel not found: ${args.channelSlug}`);
+
+    const { member } = await assertChannelMember(ctx, user._id, channel._id);
+
+    // Member count (small workspaces — bounded .take(1000) is fine for core).
+    const memberCount = (
+      await ctx.db
+        .query("channelMembers")
+        .withIndex("by_channel", (q) => q.eq("channelId", channel._id))
+        .take(1000)
+    ).length;
+
+    return { channel, membership: member, memberCount };
+  },
+});
+
+export const listBrowsable = query({
+  args: { workspaceSlug: v.string() },
+  handler: async (ctx, args) => {
+    const user = await getAuthedUser(ctx);
+    if (!user) return [];
+    const { org } = await assertMember(ctx, user._id, args.workspaceSlug);
+
+    const allChannels = await ctx.db
+      .query("channels")
+      .withIndex("by_organization", (q) => q.eq("organizationId", org._id))
+      .take(200);
+
+    const myMemberships = await ctx.db
+      .query("channelMembers")
+      .withIndex("by_user_and_organization", (q) =>
+        q.eq("userId", user._id).eq("organizationId", org._id),
+      )
+      .take(200);
+    const joinedIds = new Set(myMemberships.map((m) => m.channelId));
+
+    return allChannels
+      .filter((c) => !joinedIds.has(c._id))
+      .sort((a, b) => a.name.localeCompare(b.name));
   },
 });

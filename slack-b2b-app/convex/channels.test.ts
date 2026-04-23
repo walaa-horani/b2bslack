@@ -358,3 +358,138 @@ test("channels.deleteChannel throws on protected channel", async () => {
     asJane.mutation(api.channels.deleteChannel, { channelId: generalId }),
   ).rejects.toThrow(/protected|cannot delete/i);
 });
+
+// ---------- queries ----------
+
+test("channels.listMine returns only channels the caller belongs to", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, orgId } = await seedAcme(t);
+  await t.run(async (ctx) => {
+    // Jane is a member of #general but NOT #random.
+    const generalId = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "general",
+      name: "General",
+      createdBy: userId,
+      isProtected: true,
+    });
+    await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "random",
+      name: "Random",
+      createdBy: userId,
+      isProtected: false,
+    });
+    await ctx.db.insert("channelMembers", {
+      channelId: generalId,
+      userId,
+      organizationId: orgId,
+    });
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const mine = await asJane.query(api.channels.listMine, {
+    workspaceSlug: "acme",
+  });
+  expect(mine).toHaveLength(1);
+  expect(mine[0].slug).toBe("general");
+});
+
+test("channels.getBySlug returns channel + membership for a member", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, orgId } = await seedAcme(t);
+  await t.run(async (ctx) => {
+    const generalId = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "general",
+      name: "General",
+      createdBy: userId,
+      isProtected: true,
+    });
+    await ctx.db.insert("channelMembers", {
+      channelId: generalId,
+      userId,
+      organizationId: orgId,
+    });
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const result = await asJane.query(api.channels.getBySlug, {
+    workspaceSlug: "acme",
+    channelSlug: "general",
+  });
+  expect(result.channel.slug).toBe("general");
+  expect(result.channel.isProtected).toBe(true);
+});
+
+test("channels.getBySlug throws for non-member", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, orgId } = await seedAcme(t);
+  await t.run(async (ctx) => {
+    await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "secret",
+      name: "Secret",
+      createdBy: userId,
+      isProtected: false,
+    });
+    // No channelMembers row.
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  await expect(
+    asJane.query(api.channels.getBySlug, {
+      workspaceSlug: "acme",
+      channelSlug: "secret",
+    }),
+  ).rejects.toThrow(/Not a channel member/);
+});
+
+test("channels.listBrowsable returns channels the caller is NOT in", async () => {
+  const t = convexTest(schema, modules);
+  const { userId, orgId } = await seedAcme(t);
+  await t.run(async (ctx) => {
+    const generalId = await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "general",
+      name: "General",
+      createdBy: userId,
+      isProtected: true,
+    });
+    await ctx.db.insert("channels", {
+      organizationId: orgId,
+      slug: "random",
+      name: "Random",
+      createdBy: userId,
+      isProtected: false,
+    });
+    await ctx.db.insert("channelMembers", {
+      channelId: generalId,
+      userId,
+      organizationId: orgId,
+    });
+  });
+
+  const asJane = t.withIdentity({
+    tokenIdentifier: TOKEN,
+    subject: "user_abc",
+    email: "jane@example.com",
+  });
+  const browsable = await asJane.query(api.channels.listBrowsable, {
+    workspaceSlug: "acme",
+  });
+  expect(browsable).toHaveLength(1);
+  expect(browsable[0].slug).toBe("random");
+});
