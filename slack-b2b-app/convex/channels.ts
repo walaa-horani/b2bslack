@@ -158,7 +158,11 @@ export const getBySlug = query({
   handler: async (ctx, args) => {
     const user = await getAuthedUser(ctx);
     if (!user) throw new Error("Not authenticated");
-    const { org } = await assertMember(ctx, user._id, args.workspaceSlug);
+    const { org, membership: workspaceMembership } = await assertMember(
+      ctx,
+      user._id,
+      args.workspaceSlug,
+    );
 
     const channel = await ctx.db
       .query("channels")
@@ -178,7 +182,12 @@ export const getBySlug = query({
         .take(1000)
     ).length;
 
-    return { channel, membership: member, memberCount };
+    return {
+      channel,
+      membership: member,
+      memberCount,
+      role: workspaceMembership.role,
+    };
   },
 });
 
