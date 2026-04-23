@@ -200,12 +200,39 @@ export const listMine = query({
       )
       .take(200);
 
-    const channels = await Promise.all(
-      memberships.map((m) => ctx.db.get(m.channelId)),
-    );
-    return channels
+    const channels = (
+      await Promise.all(memberships.map((m) => ctx.db.get(m.channelId)))
+    )
       .filter((c): c is NonNullable<typeof c> => c !== null)
       .sort((a, b) => a.name.localeCompare(b.name));
+
+    const me = user;
+    const enriched = await Promise.all(
+      channels.map(async (ch) => {
+        const readState = await ctx.db
+          .query("channelReadStates")
+          .withIndex("by_user_and_channel", (q) =>
+            q.eq("userId", me._id).eq("channelId", ch._id),
+          )
+          .unique();
+        const lastReadAt = readState?.lastReadAt ?? 0;
+        const probe = await ctx.db
+          .query("messages")
+          .withIndex("by_channel", (q) => q.eq("channelId", ch._id))
+          .order("desc")
+          .take(51);
+        let unreadCount = 0;
+        for (const m of probe) {
+          if (m._creationTime <= lastReadAt) break;
+          if (m.deletedAt) continue;
+          if (m.userId === me._id) continue;
+          unreadCount++;
+        }
+        const overflow = unreadCount > 50;
+        return { ...ch, unreadCount: Math.min(unreadCount, 50), overflow };
+      }),
+    );
+    return enriched;
   },
 });
 
