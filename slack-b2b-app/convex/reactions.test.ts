@@ -2,6 +2,7 @@
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -130,4 +131,55 @@ test("reactions.toggle rejects non-channel-member", async () => {
   await expect(
     asOutsider.mutation(api.reactions.toggle, { messageId, emoji: "👍" }),
   ).rejects.toThrow(/Not a channel member/);
+});
+
+test("reactions.listForMessages groups by emoji and joins names", async () => {
+  const t = convexTest(schema, modules);
+  const { messageId, aliceId, bobId } = await seedChannelWithTwoMembersAndMessage(t);
+  const asBob = t.withIdentity({
+    tokenIdentifier: TOKEN_BOB,
+    subject: "user_bob",
+    email: "bob@example.com",
+  });
+  await asAlice(t).mutation(api.reactions.toggle, { messageId, emoji: "👍" });
+  await asBob.mutation(api.reactions.toggle, { messageId, emoji: "👍" });
+  await asAlice(t).mutation(api.reactions.toggle, { messageId, emoji: "❤️" });
+
+  const result = await asAlice(t).query(api.reactions.listForMessages, {
+    messageIds: [messageId],
+  });
+  const forMsg = result[messageId];
+  expect(forMsg).toHaveLength(2);
+  const thumbs = forMsg.find((r: { emoji: string }) => r.emoji === "👍")!;
+  expect(thumbs.count).toBe(2);
+  expect(thumbs.userIds).toEqual(expect.arrayContaining([aliceId, bobId]));
+  expect(thumbs.userNames).toEqual(expect.arrayContaining(["Alice", "Bob"]));
+  const heart = forMsg.find((r: { emoji: string }) => r.emoji === "❤️")!;
+  expect(heart.count).toBe(1);
+});
+
+test("reactions.listForMessages returns empty for messages with no reactions", async () => {
+  const t = convexTest(schema, modules);
+  const { messageId } = await seedChannelWithTwoMembersAndMessage(t);
+  const result = await asAlice(t).query(api.reactions.listForMessages, {
+    messageIds: [messageId],
+  });
+  expect(result[messageId] ?? []).toEqual([]);
+});
+
+test("reactions.listForMessages rejects batches over 300", async () => {
+  const t = convexTest(schema, modules);
+  const { channelId, bobId } = await seedChannelWithTwoMembersAndMessage(t);
+  const realIds = await t.run(async (ctx) => {
+    const ids: Id<"messages">[] = [];
+    for (let i = 0; i < 301; i++) {
+      ids.push(
+        await ctx.db.insert("messages", { channelId, userId: bobId, text: `msg${i}` }),
+      );
+    }
+    return ids;
+  });
+  await expect(
+    asAlice(t).query(api.reactions.listForMessages, { messageIds: realIds }),
+  ).rejects.toThrow(/too many/i);
 });
