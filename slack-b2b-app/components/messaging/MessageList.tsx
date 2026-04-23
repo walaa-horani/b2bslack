@@ -109,6 +109,7 @@ export function MessageList({ channelId }: { channelId: Id<"channels"> }) {
               message={row.message}
               author={row.author}
               isOwn={!!me && row.author._id === me._id}
+              currentUserId={me?._id ?? null}
             />
           ))}
         </>
