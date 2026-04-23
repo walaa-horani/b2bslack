@@ -39,6 +39,7 @@ export default defineSchema({
     name: v.string(),
     createdBy: v.id("users"),
     isProtected: v.boolean(),
+    isPrivate: v.optional(v.boolean()),
   })
     .index("by_organization", ["organizationId"])
     .index("by_organization_and_slug", ["organizationId", "slug"]),
